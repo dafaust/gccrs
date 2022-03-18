@@ -34,6 +34,11 @@ make_string (Location locus, std::string value)
 			  PrimitiveCoreType::CORETYPE_STR, {}, locus));
 }
 
+/* Parse a single string literal from the given delimited token tree,
+   and return the LiteralExpr for it. Note that this function enforces
+   that the given token tree contains exactly one string literal and
+   no other tokens.  */
+
 std::unique_ptr <AST::LiteralExpr>
 parse_single_string_literal (AST::DelimTokenTree &invoc_token_tree)
 {
@@ -65,6 +70,9 @@ parse_single_string_literal (AST::DelimTokenTree &invoc_token_tree)
 
   return lit_expr;
 }
+
+/* Read the full contents of the file FILENAME and return them in a vector.
+   FIXME: platform specific.  */
 
 std::vector<char>
 load_file_bytes (const char * filename)
@@ -126,11 +134,29 @@ MacroBuiltin::column (Location invoc_locus, AST::MacroInvocData &invoc)
 /* Expand builtin macro include!("filename"), which includes the contents of
    the given file parsed as an expression.  */
 
-  #if 0
+  # if 0
 AST::ASTFragment
 MacroBuiltin::include (Location invoc_locus, AST::MacroInvocData &invoc)
 {
   // TODO
+  auto filename_expr
+    = parse_single_string_literal (invoc.get_delim_tok_tree ());
+
+  const char * filename = filename_expr->as_string ().c_str ();
+
+  RAIIFile file_wrap (filename);
+  if (file_wrap.get_raw () == nullptr)
+    {
+      rust_fatal_error (Location (), "cannot open filename %s: %m", filename);
+    }
+
+  Lexer lex (filename, std::move (file_wrap), nullptr);
+  Parser<Lexer> parser (std::move (lex));
+
+
+
+
+  rust_fatal_error (Location (), "unimplemented");
 }
   #endif
 
