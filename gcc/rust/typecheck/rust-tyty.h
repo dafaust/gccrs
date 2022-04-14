@@ -1254,6 +1254,11 @@ public:
     ENUM
   };
 
+  struct ReprOptions {
+    // #[repr(C)]
+    bool is_c;
+  };
+
   ADTType (HirId ref, std::string identifier, RustIdent ident, ADTKind adt_kind,
 	   std::vector<VariantDef *> variants,
 	   std::vector<SubstitutionParamMapping> subst_refs,
@@ -1385,6 +1390,7 @@ private:
   std::string identifier;
   std::vector<VariantDef *> variants;
   ADTType::ADTKind adt_kind;
+  ReprOptions repr;
 };
 
 class FnType : public BaseType, public SubstitutionRef
