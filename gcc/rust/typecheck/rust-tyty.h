@@ -1255,8 +1255,9 @@ public:
   };
 
   struct ReprOptions {
-    // #[repr(C)]
-    bool is_c;
+    //bool is_c;
+    unsigned char align = 0;
+    unsigned char pack = 0;
   };
 
   ADTType (HirId ref, std::string identifier, RustIdent ident, ADTKind adt_kind,

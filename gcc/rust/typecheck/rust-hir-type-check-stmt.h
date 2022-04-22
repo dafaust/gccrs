@@ -311,6 +311,26 @@ public:
 			    TyTy::VariantDef::VariantType::STRUCT, nullptr,
 			    std::move (fields)));
 
+    // Process #[repr(X)] attribute, if any
+    const AST::AttrVec &attrs = struct_decl.get_outer_attrs ();
+    TyTy::ADTType::ReprOptions repr;
+    for (const auto &attr : attrs)
+      {
+	bool is_repr = attr.get_path ().as_string ().compare ("repr") == 0;
+	if (is_repr)
+	  {
+	      const AST::AttrInput &input = attr.get_attr_input ();
+	      bool is_token_tree = input.get_attr_input_type ()
+				   == AST::AttrInput::AttrInputType::TOKEN_TREE;
+	      rust_assert (is_token_tree);
+	      const auto &option
+		= static_cast<const AST::DelimTokenTree &> (input);
+	      AST::AttrInputMetaItemContainer *meta_items
+		= option.parse_to_meta_item ();
+
+	  }
+      }
+
     TyTy::BaseType *type
       = new TyTy::ADTType (struct_decl.get_mappings ().get_hirid (),
 			   mappings->get_next_hir_id (),

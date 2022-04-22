@@ -92,6 +92,8 @@ protected:
   static void
   handle_link_section_attribute_on_fndecl (tree fndecl,
 					   const AST::Attribute &attr);
+  static void handle_repr_attribute_on_struct (tree decl,
+						   const AST::Attribute &attr);
 
   static void handle_no_mangle_attribute_on_fndecl (tree fndecl,
 						    const AST::Attribute &attr);
