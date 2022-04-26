@@ -288,6 +288,22 @@ TyTyResolveCompile::visit (const TyTy::ADTType &type)
       type_record = ctx->get_backend ()->union_type (enum_fields);
     }
 
+  // Handle repr options
+  TyTy::ADTType::ReprOptions repr = type.get_repr_options ();
+  if (repr.pack) {
+    TYPE_PACKED (type_record);
+    if (repr.pack > 1)
+      {
+	SET_TYPE_ALIGN (type_record, repr.pack * 8);
+	TYPE_USER_ALIGN (type_record) = 1;
+      }
+  }
+  else if (repr.align) {
+    SET_TYPE_ALIGN (type_record, repr.align * 8);
+    TYPE_USER_ALIGN (type_record) = 1;
+  }
+
+
   std::string named_struct_str
     = type.get_ident ().path.get () + type.subst_as_string ();
   tree named_struct

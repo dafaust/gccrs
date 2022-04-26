@@ -19,6 +19,7 @@
 #ifndef RUST_HIR_TYPE_CHECK_TOPLEVEL
 #define RUST_HIR_TYPE_CHECK_TOPLEVEL
 
+#include "rust-diagnostics.h"
 #include "rust-hir-type-check-base.h"
 #include "rust-hir-full.h"
 #include "rust-hir-type-check-implitem.h"
@@ -29,6 +30,69 @@
 
 namespace Rust {
 namespace Resolver {
+
+TyTy::ADTType::ReprOptions
+parse_repr_options (const AST::AttrVec &attrs, Location locus)
+{
+
+  TyTy::ADTType::ReprOptions repr;
+  repr.pack = 0;
+  repr.align = 0;
+
+  for (const auto &attr : attrs)
+    {
+      bool is_repr = attr.get_path ().as_string ().compare ("repr") == 0;
+      if (is_repr)
+	{
+	  const AST::AttrInput &input = attr.get_attr_input ();
+	  bool is_token_tree = input.get_attr_input_type ()
+			       == AST::AttrInput::AttrInputType::TOKEN_TREE;
+	  rust_assert (is_token_tree);
+	  const auto &option = static_cast<const AST::DelimTokenTree &> (input);
+	  AST::AttrInputMetaItemContainer *meta_items
+	    = option.parse_to_meta_item ();
+
+	  const std::string inline_option
+	    = meta_items->get_items ().at (0)->as_string ();
+
+	  size_t oparen = inline_option.find ('(', 0);
+	  bool is_pack = false, is_align = false;
+	  unsigned char value = 1;
+
+	  if (oparen == std::string::npos)
+	    {
+	      is_pack = inline_option.compare ("packed") == 0;
+	      is_align = inline_option.compare ("align") == 0;
+	    }
+
+	  else
+	    {
+	      std::string rep = inline_option.substr (0, oparen);
+	      is_pack = rep.compare ("packed") == 0;
+	      is_align = rep.compare ("align") == 0;
+
+	      size_t cparen = inline_option.find (')', oparen);
+	      if (cparen == std::string::npos)
+		{
+		  rust_error_at (locus, "malformed attribute");
+		}
+
+	      std::string value_str = inline_option.substr (oparen, cparen);
+	      value = strtoul (value_str.c_str () + 1, NULL, 10);
+	    }
+
+	  if (is_pack)
+	    repr.pack = value;
+	  else if (is_align)
+	    repr.align = value;
+
+	  // Multiple repr options must be specified with e.g. #[repr(C, packed(2))].
+	  break;
+	}
+    }
+
+  return repr;
+}
 
 class TypeCheckTopLevel : public TypeCheckBase
 {
@@ -118,12 +182,17 @@ public:
 			    TyTy::VariantDef::VariantType::TUPLE, nullptr,
 			    std::move (fields)));
 
+    // Process #[repr(X)] attribute, if any
+    const AST::AttrVec &attrs = struct_decl.get_outer_attrs ();
+    TyTy::ADTType::ReprOptions repr = parse_repr_options(attrs, struct_decl.get_locus ());
+
     TyTy::BaseType *type
       = new TyTy::ADTType (struct_decl.get_mappings ().get_hirid (),
 			   mappings->get_next_hir_id (),
 			   struct_decl.get_identifier (), ident,
 			   TyTy::ADTType::ADTKind::TUPLE_STRUCT,
-			   std::move (variants), std::move (substitutions));
+			   std::move (variants), std::move (substitutions),
+			   repr);
 
     context->insert_type (struct_decl.get_mappings (), type);
   }
@@ -196,12 +265,17 @@ public:
 			    TyTy::VariantDef::VariantType::STRUCT, nullptr,
 			    std::move (fields)));
 
+    // Process #[repr(X)] attribute, if any
+    const AST::AttrVec &attrs = struct_decl.get_outer_attrs ();
+    TyTy::ADTType::ReprOptions repr = parse_repr_options (attrs, struct_decl.get_locus ());
+
     TyTy::BaseType *type
       = new TyTy::ADTType (struct_decl.get_mappings ().get_hirid (),
 			   mappings->get_next_hir_id (),
 			   struct_decl.get_identifier (), ident,
 			   TyTy::ADTType::ADTKind::STRUCT_STRUCT,
-			   std::move (variants), std::move (substitutions));
+			   std::move (variants), std::move (substitutions),
+			   repr);
 
     context->insert_type (struct_decl.get_mappings (), type);
   }

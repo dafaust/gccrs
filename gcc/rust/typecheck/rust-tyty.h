@@ -1254,8 +1254,15 @@ public:
     ENUM
   };
 
+  // Representation options, specified via attributes e.g. #[repr(packed)]
   struct ReprOptions {
     //bool is_c;
+    //bool is_transparent;
+    //...
+
+    // For align and pack: 0 = unspecified. Nonzero = byte alignment.
+    // It is an error for both to be nonzero, this should be caught when
+    // parsing the #[repr] attribute.
     unsigned char align = 0;
     unsigned char pack = 0;
   };
@@ -1282,7 +1289,21 @@ public:
       identifier (identifier), variants (variants), adt_kind (adt_kind)
   {}
 
+  ADTType (HirId ref, HirId ty_ref, std::string identifier, RustIdent ident,
+	   ADTKind adt_kind, std::vector<VariantDef *> variants,
+	   std::vector<SubstitutionParamMapping> subst_refs,
+	   ReprOptions repr,
+	   SubstitutionArgumentMappings generic_arguments
+	   = SubstitutionArgumentMappings::error (),
+	   std::set<HirId> refs = std::set<HirId> ())
+    : BaseType (ref, ty_ref, TypeKind::ADT, ident, refs),
+      SubstitutionRef (std::move (subst_refs), std::move (generic_arguments)),
+      identifier (identifier), variants (variants), adt_kind (adt_kind), repr (repr)
+  {}
+
+
   ADTKind get_adt_kind () const { return adt_kind; }
+  ReprOptions get_repr_options () const { return repr; }
 
   bool is_struct_struct () const { return adt_kind == STRUCT_STRUCT; }
   bool is_tuple_struct () const { return adt_kind == TUPLE_STRUCT; }

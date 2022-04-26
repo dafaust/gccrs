@@ -328,6 +328,15 @@ public:
 	      AST::AttrInputMetaItemContainer *meta_items
 		= option.parse_to_meta_item ();
 
+	      const std::string inline_option
+		= meta_items->get_items ().at (0)->as_string ();
+
+	      bool is_packed = inline_option.compare ("packed") == 0;
+	      bool is_align = inline_option.compare ("align") == 0;
+
+	      if (is_packed) {
+	      }
+
 	  }
       }
 
@@ -336,7 +345,8 @@ public:
 			   mappings->get_next_hir_id (),
 			   struct_decl.get_identifier (), ident,
 			   TyTy::ADTType::ADTKind::STRUCT_STRUCT,
-			   std::move (variants), std::move (substitutions));
+			   std::move (variants), std::move (substitutions),
+			   repr);
 
     context->insert_type (struct_decl.get_mappings (), type);
     infered = type;

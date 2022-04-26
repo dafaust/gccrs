@@ -960,6 +960,7 @@ ADTType::clone () const
 
   return new ADTType (get_ref (), get_ty_ref (), identifier, ident,
 		      get_adt_kind (), cloned_variants, clone_substs (),
+		      get_repr_options (),
 		      used_arguments, get_combined_refs ());
 }
 
