@@ -188,14 +188,6 @@ TyTyResolveCompile::visit (const TyTy::ADTType &type)
       type_record = type.is_union ()
 		      ? ctx->get_backend ()->union_type (fields)
 		      : ctx->get_backend ()->struct_type (fields);
-
-      if (!type.is_union ()) {
-	// TODO: where do we get the attributes ??
-	// HIRCompileBase::handle_repr_attribute_on_struct (type_record,
-						 // const AST::Attribute &attr)
-	// AST::AttrVec outer_attrs = type.get_outer_attrs ();
-      }
-
     }
   else
     {

@@ -220,62 +220,6 @@ HIRCompileBase::handle_must_use_attribute_on_fndecl (tree fndecl,
 }
 
 void
-HIRCompileBase::handle_repr_attribute_on_struct (tree decl,
-						 const AST::Attribute &attr)
-{
-
-  // Verify the decl is a struct decl
-
-  // simple #[repr] is not allowed - malformed attribute.
-  if (!attr.has_attr_input ())
-    {
-      rust_error_at (attr.get_locus (), "malformed attribute");
-      return;
-    }
-
-  const AST::AttrInput &input = attr.get_attr_input ();
-  bool is_token_tree
-    = input.get_attr_input_type () == AST::AttrInput::AttrInputType::TOKEN_TREE;
-  rust_assert (is_token_tree);
-  const auto &option = static_cast<const AST::DelimTokenTree &> (input);
-  AST::AttrInputMetaItemContainer *meta_item = option.parse_to_meta_item ();
-
-  const std::string inline_option
-    = meta_item->get_items ().at (0)->as_string ();
-
-  // We can have more than one at a time, e.g. #[repr(C, align(8))]
-  // if (meta_item->get_items ().size () != 1)
-  //   {
-  //     rust_error_at (attr.get_locus (), "invalid number of arguments");
-  //     return;
-  //   }
-
-  // #[repr(packed)]
-  // TYPE_PACKED (tree) = 1;
-  // set align to 1
-
-  // packed and align are mutually exclusive
-  bool is_packed = inline_option.compare("packed") == 0;
-  bool is_align = inline_option.compare("align") == 0;
-
-  if (is_packed) {
-    TYPE_PACKED (decl) = 1;
-  }
-
-  // #[repr(packed(N))]
-  // Set TYPE_PACKED _and_ set type align to N
-
-  // #[repr(align)] not allowed - requires an argument
-
-  // #[repr(align(N))]
-  // SET_TYPE_ALIGN (tree, N-in-bits);
-  // TYPE_USER_ALIGN (tree) = 1;
-  //
-
-
-}
-
-void
 HIRCompileBase::setup_abi_options (tree fndecl, ABI abi)
 {
   switch (abi)
