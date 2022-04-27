@@ -281,6 +281,9 @@ TyTyResolveCompile::visit (const TyTy::ADTType &type)
     }
 
   // Handle repr options
+  // TODO: "packed" should only narrow type alignment and "align" should only widen it.
+  // Do we need to check and enforce this here, or is it taken care of later on in
+  // the gcc middle-end?
   TyTy::ADTType::ReprOptions repr = type.get_repr_options ();
   if (repr.pack) {
     TYPE_PACKED (type_record);
