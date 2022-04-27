@@ -55,6 +55,9 @@ parse_repr_options (const AST::AttrVec &attrs, Location locus)
 	  const std::string inline_option
 	    = meta_items->get_items ().at (0)->as_string ();
 
+	  // TODO: it might be better if parse_to_meta_item gave us a more
+	  // useful list of tokens so we didn't have to do string parsing here.
+
 	  size_t oparen = inline_option.find ('(', 0);
 	  bool is_pack = false, is_align = false;
 	  unsigned char value = 1;
