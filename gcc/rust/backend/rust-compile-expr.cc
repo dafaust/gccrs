@@ -225,7 +225,8 @@ CompileExpr::visit (HIR::MatchExpr &expr)
   TyTy::TypeKind scrutinee_kind = scrutinee_expr_tyty->get_kind ();
   rust_assert ((TyTy::is_primitive_type_kind (scrutinee_kind)
 		&& scrutinee_kind != TyTy::TypeKind::NEVER)
-	       || scrutinee_kind == TyTy::TypeKind::ADT);
+	       || scrutinee_kind == TyTy::TypeKind::ADT
+	       || scrutinee_kind == TyTy::TypeKind::TUPLE);
 
   if (scrutinee_kind == TyTy::TypeKind::ADT)
     {
@@ -289,6 +290,43 @@ CompileExpr::visit (HIR::MatchExpr &expr)
 	= ctx->get_backend ()->struct_field_expression (
 	  scrutinee_first_record_expr, 0,
 	  expr.get_scrutinee_expr ()->get_locus ());
+    }
+  else if (scrutinee_kind == TyTy::TypeKind::TUPLE)
+    {
+      // match on tuple becomes a series of nested switches, with one level
+      // for each element of the tuple from left to right.
+     TyTy::TupleType *tupty = static_cast<TyTy::TupleType *> (scrutinee_expr_tyty);
+     auto exprtype = expr.get_scrutinee_expr ()->get_expression_type ();
+     switch (exprtype)
+       {
+	 case HIR::Expr::ExprType::Tuple:
+	   {
+	     auto ref = *static_cast<HIR::TupleExpr *> (expr.get_scrutinee_expr ());
+	     auto elem = ref.get_tuple_elems ()[0];
+
+	     auto new_cases = std::vector<HIR::MatchCase> ();
+
+	     for (auto &kase : expr.get_match_cases ())
+	       {
+		 HIR::MatchArm &kase_arm = kase.get_arm ();
+		 rust_assert (kase_arm.get_patterns ().size () > 0);
+
+	       }
+	   }
+	   break;
+	 // case HIR::Expr::ExprType::Ident:
+	 //   {
+
+	 //   }
+	 //   break;
+	 case HIR::Expr::ExprType::Path:
+	   {
+
+	   }
+	   break;
+	 default:
+	   gcc_unreachable ();
+       }
     }
   else
     {
