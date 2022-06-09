@@ -31,6 +31,7 @@
 #include "realmpfr.h"
 #include "convert.h"
 #include "print-tree.h"
+#include <memory>
 
 namespace Rust {
 namespace Compile {
@@ -301,8 +302,21 @@ CompileExpr::visit (HIR::MatchExpr &expr)
        {
 	 case HIR::Expr::ExprType::Tuple:
 	   {
-	     auto ref = *static_cast<HIR::TupleExpr *> (expr.get_scrutinee_expr ());
-	     auto elem = ref.get_tuple_elems ()[0];
+	     // 1. Cut off head from scrutinee S and each pattern P. Build a new
+	     //    match M out of the heads S of scrutinee and each pattern P.
+	     // 2. Build a new tuple match M' out of the tails S' and P' of
+	     //    each pattern, and compile it.
+	     // 3. Build a new block expr for the right-hand side of each
+	     //    pattern head P, and copy the result of compiling M' into each
+	     //    body.
+	     // 4. Compile M, with the new block expr's added for each arm.
+	     auto ref = *static_cast<HIR::TupleExpr *> (expr.get_scrutinee_expr ().get ());
+	     auto elems = ref.get_tuple_elems ();
+
+	     auto tail = std::vector<std::unique_ptr<HIR::Expr>> ();
+	     tail.reserve(elems.size () - 1);
+	     for (auto &item : ref.get_tuple_elems ())
+	       tail.push_back (item);
 
 	     auto new_cases = std::vector<HIR::MatchCase> ();
 
@@ -310,7 +324,6 @@ CompileExpr::visit (HIR::MatchExpr &expr)
 	       {
 		 HIR::MatchArm &kase_arm = kase.get_arm ();
 		 rust_assert (kase_arm.get_patterns ().size () > 0);
-
 	       }
 	   }
 	   break;
