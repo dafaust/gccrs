@@ -21,6 +21,7 @@
 #include "rust-compile-implitem.h"
 #include "rust-compile-expr.h"
 #include "rust-compile-struct-field-expr.h"
+#include "rust-hir-expr.h"
 #include "rust-hir-trait-resolve.h"
 #include "rust-hir-path-probe.h"
 #include "rust-hir-type-bounds.h"
@@ -182,6 +183,100 @@ CompileExpr::visit (HIR::DereferenceExpr &expr)
 						known_valid, expr.get_locus ());
 }
 
+// Given a match expr like
+//   match (tupA, tupB, ..., tupY, tupZ) {
+//     (a1, b1, ..., y1, z1) => { blk1 }
+//     (a1, b2, ..., y2, z2) => { blk2 }
+//     (a2, b3, ..., y3, z3) => { blk3 }
+//     ...
+//   }
+// Simplify it one level by.....
+//   match tupA {
+//     a1 => {
+//       match (tupB, ...) {
+//         (b1, ..., y1, z1) => { blk 1 }
+//       }
+//     }
+//   }
+void
+simplify_one_match_tuple_elt (HIR::MatchExpr &expr)
+{
+
+  rust_assert (expr.get_scrutinee_expr ()->get_expression_type()
+	       == HIR::Expr::ExprType::Tuple);
+
+  auto tuple = *static_cast<HIR::TupleExpr *> (expr.get_scrutinee_expr().get ());
+
+  auto tail = tuple.get_tuple_elems ();
+  auto head = std::move (tail[0]);
+
+  // Head is the first expr of the tuple and tail is the rest
+  auto remaining = HIR::TupleExpr (tuple);
+
+  // Tracks all the _unique_ first patterns in the match cases so we can
+  std::vector<std::unique_ptr<HIR::Pattern>> unique_first_patterns;
+
+  for (auto &match_case : expr.get_match_cases())
+    {
+      HIR::MatchArm &case_arm = match_case.get_arm ();
+      rust_assert (case_arm.get_patterns ().size () > 0);
+
+      auto &case_tail = case_arm.get_patterns ();
+
+      // Take the first pattern from each arm..
+      std::vector<std::unique_ptr<HIR::Pattern>> new_case;
+      new_case.emplace_back (std::move(case_tail[0]));
+
+      case_tail.erase (case_tail.begin (), case_tail.begin () + 1);
+
+      // Make a new MatchArm for it
+      HIR::MatchArm new_arm = HIR::MatchArm (std::move (new_case),
+					     case_arm.get_locus ());
+
+      // The expr on the right of the MatchArm i.e. blk1 in
+      //  pat => { blk 1 }
+      std::unique_ptr<HIR::Expr> rhs_expr = std::move (match_case.get_expr ());
+
+      // Construct the new smaller match expr on the remaining elements
+
+      //HIR::MatchExpr (expr.get_mappings (), remaining, case_tail, );
+
+      // Make a new block with the smaller match expr inside it
+
+    }
+}
+
+
+void
+build_simpler_match (HIR::MatchExpr &expr)
+{
+  rust_assert (expr.get_scrutinee_expr ()->get_expression_type()
+	       == HIR::Expr::ExprType::Tuple);
+
+  auto tuple = *static_cast<HIR::TupleExpr *> (expr.get_scrutinee_expr().get ());
+
+  std::unique_ptr<HIR::Expr> scrutinee_head = tuple.get_tuple_elems ()[0]->clone_expr ();
+
+  auto unique_first_patterns = std::set<std::unique_ptr<HIR::Pattern>> ();
+  for (auto &match_case : expr.get_match_cases ())
+    {
+      // Collect all the unique first patterns in the match
+      HIR::MatchArm &case_arm = match_case.get_arm ();
+      auto first = case_arm.get_patterns ()[0]->clone_pattern ();
+      unique_first_patterns.insert (first);
+
+      HIR::MatchArm new_arm = case_arm;
+
+      // While we're at it, create patterns corresponding to the tail of each
+      for (auto &pat : case_arm.get_patterns())
+	{
+
+	}
+    }
+
+}
+
+
 void
 CompileExpr::visit (HIR::MatchExpr &expr)
 {
@@ -292,11 +387,21 @@ CompileExpr::visit (HIR::MatchExpr &expr)
 	  scrutinee_first_record_expr, 0,
 	  expr.get_scrutinee_expr ()->get_locus ());
     }
+  #if 0
+  else if (scrutinee_kind == TyTy::TypeKind::TUPLE)
+    {
+      tree first_elt
+	= ctx->get_backend ()->struct_field_expression (
+	  match_scrutinee_expr, 0, expr.get_scrutinee_expr ()->get_locus ());
+
+      match_scrutinee_expr_qualifier_expr = first_elt;
+    }
+  #else
   else if (scrutinee_kind == TyTy::TypeKind::TUPLE)
     {
       // match on tuple becomes a series of nested switches, with one level
       // for each element of the tuple from left to right.
-     TyTy::TupleType *tupty = static_cast<TyTy::TupleType *> (scrutinee_expr_tyty);
+     //TyTy::TupleType *tupty = static_cast<TyTy::TupleType *> (scrutinee_expr_tyty);
      auto exprtype = expr.get_scrutinee_expr ()->get_expression_type ();
      switch (exprtype)
        {
@@ -311,19 +416,45 @@ CompileExpr::visit (HIR::MatchExpr &expr)
 	     //    body.
 	     // 4. Compile M, with the new block expr's added for each arm.
 	     auto ref = *static_cast<HIR::TupleExpr *> (expr.get_scrutinee_expr ().get ());
-	     auto elems = ref.get_tuple_elems ();
 
-	     auto tail = std::vector<std::unique_ptr<HIR::Expr>> ();
-	     tail.reserve(elems.size () - 1);
-	     for (auto &item : ref.get_tuple_elems ())
-	       tail.push_back (item);
+	     //auto rest = HIR::TupleExpr (ref);
+	     auto &tail = ref.get_tuple_elems ();
+	     auto head = std::move (tail[0]);
+	     tail.erase (tail.begin (), tail.begin () + 1);
 
-	     auto new_cases = std::vector<HIR::MatchCase> ();
+	     // Now head is the unique_ptr to the first expr of the tuple and tail is the rest.
+	     auto remaining = HIR::TupleExpr (ref);
 
-	     for (auto &kase : expr.get_match_cases ())
+	     for (auto &match_case : expr.get_match_cases ())
 	       {
-		 HIR::MatchArm &kase_arm = kase.get_arm ();
-		 rust_assert (kase_arm.get_patterns ().size () > 0);
+		 HIR::MatchArm &case_arm = match_case.get_arm ();
+		 rust_assert (case_arm.get_patterns ().size () > 0);
+
+		 if (case_arm.has_match_arm_guard ())
+		   {
+		     // TODO: what do we do with the guard?
+		     // Guard can refer to any element of the pattern
+		   }
+
+		 auto &case_tail = case_arm.get_patterns ();
+		 std::vector<std::unique_ptr<HIR::Pattern>> new_case;
+		 new_case.emplace_back (std::move(case_tail[0]));
+
+		 case_tail.erase (case_tail.begin (), case_tail.begin () + 1);
+
+		 HIR::MatchArm new_arm = HIR::MatchArm (std::move (new_case),
+							case_arm.get_locus ());
+
+		 // The expr on the right of the MatchArm i.e. blk1 in
+		 //  pat => { blk 1 }
+		 auto rhs_expr = match_case.get_expr ();
+
+		 // The body for the new arm is a new match on the remaining elements
+		 // of the tuple
+		 //HIR::Expr inner_match = HIR::MatchExpr (expr.get_mappings (),
+			//				 remaining,
+				//			 )
+
 	       }
 	   }
 	   break;
@@ -341,6 +472,7 @@ CompileExpr::visit (HIR::MatchExpr &expr)
 	   gcc_unreachable ();
        }
     }
+  #endif
   else
     {
       // FIXME: match on other types of expressions not yet implemented.
