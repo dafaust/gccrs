@@ -22,6 +22,7 @@
 #include "rust-compile-expr.h"
 #include "rust-compile-struct-field-expr.h"
 #include "rust-hir-expr.h"
+#include "rust-hir-pattern.h"
 #include "rust-hir-trait-resolve.h"
 #include "rust-hir-path-probe.h"
 #include "rust-hir-type-bounds.h"
@@ -32,6 +33,7 @@
 #include "realmpfr.h"
 #include "convert.h"
 #include "print-tree.h"
+#include "rust-hir.h"
 #include <memory>
 
 namespace Rust {
@@ -198,6 +200,7 @@ CompileExpr::visit (HIR::DereferenceExpr &expr)
 //       }
 //     }
 //   }
+#if 0
 void
 simplify_one_match_tuple_elt (HIR::MatchExpr &expr)
 {
@@ -273,9 +276,157 @@ build_simpler_match (HIR::MatchExpr &expr)
 
 	}
     }
+}
+#endif
 
+// TODO: need to capture the whole MatchArms not just the patterns
+// so map<pattern, vec<(tuplepattern, expr)> or something
+std::map<std::unique_ptr<HIR::Pattern>, std::vector<HIR::MatchCase>>
+organize_tuple_patterns (HIR::MatchExpr &expr)
+{
+  rust_assert (expr.get_scrutinee_expr ()->get_expression_type()
+	       == HIR::Expr::ExprType::Tuple);
+
+  // Maps the first element of a tuple pattern to all the (sub-)patterns which
+  // start with that pattern
+  auto map = std::map<std::unique_ptr<HIR::Pattern>, std::vector<HIR::MatchCase>> ();
+
+  for (auto &match_case : expr.get_match_cases ())
+    {
+      HIR::MatchArm &case_arm = match_case.get_arm ();
+
+      // TODO: Note we are only dealing with the first pattern in the arm.
+      // The patterns vector in the arm might hold many patterns, which are the patterns
+      // separated by the '|' token. Rustc abstracts these as "Or" patterns, and part of
+      // its simplification process is to get rid of them.
+      // We should get rid of the ORs too, maybe here or earlier than here?
+      auto pat = case_arm.get_patterns ()[0]->clone_pattern ();
+
+      // TODO: wildcards
+      if (pat->get_pattern_type() == HIR::Pattern::PatternType::WILDCARD)
+	continue;
+
+      rust_assert (pat->get_pattern_type () == HIR::Pattern::PatternType::TUPLE);
+
+      auto ref = *static_cast<HIR::TuplePattern*> (pat.get ());
+
+      rust_assert (ref.has_tuple_pattern_items());
+
+      auto items = HIR::TuplePattern (ref).get_items()->clone_tuple_pattern_items();
+      if (items->get_pattern_type() == HIR::TuplePatternItems::TuplePatternItemType::MULTIPLE)
+	{
+	  auto items_ref = *static_cast<HIR::TuplePatternItemsMultiple*>(items.get ());
+
+	  // Pop the first pattern out
+	  auto patterns = std::vector<std::unique_ptr<HIR::Pattern>> ();
+	  //auto patterns = items_ref.get_patterns ();
+	  auto first = items_ref.get_patterns()[0]->clone_pattern();
+	  for (auto p = items_ref.get_patterns().begin()+1; p != items_ref.get_patterns().end(); p++)
+	    {
+	      //std::unique_ptr<HIR::Pattern> pat = *p;
+	      patterns.push_back((*p)->clone_pattern());
+	    }
+
+	  //auto first = patterns[0]->clone_pattern ();
+	  //patterns.erase (patterns.begin ());
+
+	  auto new_items = std::unique_ptr<HIR::TuplePatternItems>
+	   (new HIR::TuplePatternItemsMultiple (std::move (patterns)));
+
+	  // Construct a TuplePattern from the rest of the patterns
+	  std::unique_ptr<HIR::Pattern> new_tuple (
+	    new HIR::TuplePattern (ref.get_pattern_mappings (),
+				   std::move (new_items), ref.get_locus ()));
+
+	  // I don't know why we need to make foo separately here but
+	  // using the { new_tuple } syntax in new_arm constructor does not compile.
+	  auto foo = std::vector<std::unique_ptr<HIR::Pattern>> ();
+	  foo.emplace_back (std::move (new_tuple));
+	  HIR::MatchArm new_arm (std::move (foo), Location (), nullptr, AST::AttrVec());
+
+	  HIR::MatchCase new_case (match_case.get_mappings (),
+				   new_arm,
+				   match_case.get_expr()->clone_expr());
+
+	  auto search = map.find (first);
+	  if (search != map.end ())
+	    {
+	      //search->second.push_back(new_tuple);
+	      search->second.push_back(new_case);
+	    }
+	  else
+	    {
+	      //map[std::move (first)] = { std::move (new_tuple) };
+	      map[std::move(first)] = { new_case };
+	    }
+
+	}
+      else /* TuplePatternItemType::RANGED */
+	{
+	  // FIXME
+	  // I dunno lol
+	}
+
+//      case_arm.get_patterns ().erase (case_arm.get_patterns().begin());
+
+    }
+
+  return map;
 }
 
+// A MatchExpr that corresponds to e
+struct SimpleMatch {
+  std::unique_ptr<HIR::Expr> scrutinee;
+  std::vector<std::unique_ptr<HIR::Pattern>> patterns;
+};
+
+void
+build_match (HIR::MatchExpr &expr)
+{
+  rust_assert (expr.get_scrutinee_expr ()->get_expression_type()
+	       == HIR::Expr::ExprType::Tuple);
+
+  auto tuple = *static_cast<HIR::TupleExpr *> (expr.get_scrutinee_expr().get ());
+}
+
+
+#if 0
+void
+compile_tuple_match (HIR::MatchExpr &expr)
+{
+  rust_assert (expr.get_scrutinee_expr ()->get_expression_type()
+	       == HIR::Expr::ExprType::Tuple);
+
+  // For a tuple expr the scrutinee will be a CONSTRUCTOR node.
+  tree match_scrutinee_expr
+    = CompileExpr::Compile (expr.get_scrutinee_expr ().get (), ctx);
+  // Take the first element of the tuple instead
+  tree first_elt
+    = ctx->get_backend ()->struct_field_expression (
+       match_scrutinee_expr, 0, expr.get_scrutinee_expr ()->get_locus ());
+
+  tree match_scrutinee_expr_qualifier_expr = first_elt;
+
+  // setup the end label so the cases can exit properly
+  tree fndecl = fnctx.fndecl;
+  Location end_label_locus = expr.get_locus (); // FIXME
+  tree end_label
+    = ctx->get_backend ()->label (fndecl,
+				  "" /* empty creates an artificial label */,
+				  end_label_locus);
+  tree end_label_decl_statement
+    = ctx->get_backend ()->label_definition_statement (end_label);
+
+  // setup the switch-body-block
+  Location start_location; // FIXME
+  Location end_location;   // FIXME
+  tree enclosing_scope = ctx->peek_enclosing_scope ();
+  tree switch_body_block
+    = ctx->get_backend ()->block (fndecl, enclosing_scope, {}, start_location,
+				  end_location);
+
+}
+#endif
 
 void
 CompileExpr::visit (HIR::MatchExpr &expr)
@@ -387,12 +538,14 @@ CompileExpr::visit (HIR::MatchExpr &expr)
 	  scrutinee_first_record_expr, 0,
 	  expr.get_scrutinee_expr ()->get_locus ());
     }
-  #if 0
+  #if 1
   else if (scrutinee_kind == TyTy::TypeKind::TUPLE)
     {
       tree first_elt
 	= ctx->get_backend ()->struct_field_expression (
 	  match_scrutinee_expr, 0, expr.get_scrutinee_expr ()->get_locus ());
+
+      auto map = organize_tuple_patterns(expr);
 
       match_scrutinee_expr_qualifier_expr = first_elt;
     }
@@ -447,7 +600,7 @@ CompileExpr::visit (HIR::MatchExpr &expr)
 
 		 // The expr on the right of the MatchArm i.e. blk1 in
 		 //  pat => { blk 1 }
-		 auto rhs_expr = match_case.get_expr ();
+		 // auto rhs_expr = match_case.get_expr ();
 
 		 // The body for the new arm is a new match on the remaining elements
 		 // of the tuple
