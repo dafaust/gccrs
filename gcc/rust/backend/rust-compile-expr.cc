@@ -279,8 +279,11 @@ build_simpler_match (HIR::MatchExpr &expr)
 }
 #endif
 
-// TODO: need to capture the whole MatchArms not just the patterns
-// so map<pattern, vec<(tuplepattern, expr)> or something
+
+// For each tuple pattern in a given match, pull out the first elt of the
+// tuple and construct a new MatchCase with the remaining tuple elts as the
+// pattern. Return a mapping from each _unique_ first tuple element to a
+// vec of cases for a new match.
 std::map<std::unique_ptr<HIR::Pattern>, std::vector<HIR::MatchCase>>
 organize_tuple_patterns (HIR::MatchExpr &expr)
 {
@@ -302,7 +305,7 @@ organize_tuple_patterns (HIR::MatchExpr &expr)
       // We should get rid of the ORs too, maybe here or earlier than here?
       auto pat = case_arm.get_patterns ()[0]->clone_pattern ();
 
-      // TODO: wildcards
+      // TODO: wildcards?
       if (pat->get_pattern_type() == HIR::Pattern::PatternType::WILDCARD)
 	continue;
 
@@ -538,7 +541,7 @@ CompileExpr::visit (HIR::MatchExpr &expr)
 	  scrutinee_first_record_expr, 0,
 	  expr.get_scrutinee_expr ()->get_locus ());
     }
-  #if 1
+  #if 0
   else if (scrutinee_kind == TyTy::TypeKind::TUPLE)
     {
       tree first_elt
@@ -569,15 +572,87 @@ CompileExpr::visit (HIR::MatchExpr &expr)
 	     //    body.
 	     // 4. Compile M, with the new block expr's added for each arm.
 	     auto ref = *static_cast<HIR::TupleExpr *> (expr.get_scrutinee_expr ().get ());
+	     // match (tupA, tupB, tupC) {
+	     //   (a1, b1, c1) => { blk1 },
+	     //   (a2, b2, c2) => { blk2 },
+	     //   (a1, b3, c3) => { blk3 },
+	     // }
 
 	     //auto rest = HIR::TupleExpr (ref);
+	     // head e.g. (tupA)
 	     auto &tail = ref.get_tuple_elems ();
 	     auto head = std::move (tail[0]);
 	     tail.erase (tail.begin (), tail.begin () + 1);
 
 	     // Now head is the unique_ptr to the first expr of the tuple and tail is the rest.
+	     // e.g. (tupB, tupC)
 	     auto remaining = HIR::TupleExpr (ref);
 
+	     // e.g.
+	     // a1 -> [(b1, c1) => { blk1 },
+	     //        (b3, c3) => { blk3 }]
+	     // a2 -> [(b2, c2) => { blk2 }]
+	     auto map = organize_tuple_patterns (expr);
+
+	     std::vector<HIR::MatchCase> cases;
+	     // Construct the innter match for each unique first elt of the tuple patterns
+	     for (auto iter = map.begin (); iter != map.end (); ++iter)
+	       {
+		 // match (tupB, tupC) {
+		 //   (b1, c1) => { blk1 },
+		 //   (b3, c3) => { blk3 }
+		 // }
+		 std::unique_ptr<HIR::Expr> inner_match
+		   = std::unique_ptr<HIR::Expr> (
+			new HIR::MatchExpr (expr.get_mappings (), remaining.clone_expr(),
+					    iter->second, AST::AttrVec (), expr.get_outer_attrs(),
+					    expr.get_locus()));
+
+		 auto outer_arm_pat = std::vector<std::unique_ptr<HIR::Pattern>> ();
+		 outer_arm_pat.emplace_back (iter->first->clone_pattern());
+		 HIR::MatchArm outer_arm (std::move (outer_arm_pat), expr.get_locus ());
+
+		 // a1 => match (tupB, tupC) { ... }
+		 HIR::MatchCase outer_case (expr.get_mappings (), outer_arm, std::move (inner_match));
+
+		 cases.push_back (outer_case);
+	       }
+
+	     // match tupA {
+	     //   a1 => match (tupB, tupC) {
+	     //     (b1, c1) => { blk1 },
+	     //     (b3, c3) => { blk3 }
+	     //   }
+	     //   a2 => match (tupB, tupC) {
+	     //     (b2, c2) => { blk2 }
+	     //   }
+	     // }
+	     HIR::MatchExpr outer_match (expr.get_mappings (), std::move (head), cases, AST::AttrVec (),
+					 expr.get_outer_attrs (), expr.get_locus ());
+
+	     // What to do here...
+	     // We've rearranged the match into something that lowers better
+	     // to GIMPLE.
+	     // For actually doing the lowering we need to compile the match we've
+	     // just made. But we're half-way through compiling the original one.
+	     // ...
+	     // Really we want to just sort of, replace the current one with the
+	     // rearranged one in-place right now.
+	     match_scrutinee_expr
+	       = CompileExpr::Compile (outer_match.get_scrutinee_expr ().get (), ctx);
+	     match_scrutinee_expr_qualifier_expr = match_scrutinee_expr;
+
+	     expr = outer_match;
+
+	     #if 0
+	     tree rec = CompileExpr::Compile (&outer_match, ctx);
+	     if (rec == NULL_TREE)
+	       {
+		 rust_assert (false);
+	       }
+	     #endif
+
+	     #if 0
 	     for (auto &match_case : expr.get_match_cases ())
 	       {
 		 HIR::MatchArm &case_arm = match_case.get_arm ();
@@ -609,6 +684,7 @@ CompileExpr::visit (HIR::MatchExpr &expr)
 				//			 )
 
 	       }
+	     #endif
 	   }
 	   break;
 	 // case HIR::Expr::ExprType::Ident:
