@@ -300,6 +300,178 @@ organize_tuple_patterns (HIR::MatchExpr &expr)
   return map;
 }
 
+// Determine whether Patterns a and b are really the same pattern.
+// FIXME: This is a nasty hack to avoid properly implementing a comparison
+//        for Patterns, which we really probably do want at some point.
+static bool
+patterns_mergeable (HIR::Pattern *a, HIR::Pattern *b)
+{
+  if (!a || !b)
+    return false;
+
+  HIR::Pattern::PatternType pat_type = a->get_pattern_type ();
+  if (b->get_pattern_type() != pat_type)
+    return false;
+
+  switch (pat_type)
+    {
+      case HIR::Pattern::PatternType::PATH:
+	{
+	  // FIXME: this is far too naive
+	  HIR::PathPattern &aref = *static_cast<HIR::PathPattern *> (a);
+	  HIR::PathPattern &bref = *static_cast<HIR::PathPattern *> (b);
+	  if (aref.get_num_segments () != bref.get_num_segments ())
+	    return false;
+
+	  const auto &asegs = aref.get_segments ();
+	  const auto &bsegs = bref.get_segments ();
+	  for (size_t i = 0; i < asegs.size (); i++)
+	    {
+	      if (asegs[i].as_string () != bsegs[i].as_string ())
+		return false;
+	    }
+	  return true;
+	}
+	break;
+    case HIR::Pattern::PatternType::LITERAL:
+	  {
+	    HIR::LiteralPattern &aref = *static_cast<HIR::LiteralPattern *> (a);
+	    HIR::LiteralPattern &bref = *static_cast<HIR::LiteralPattern *> (b);
+	    return aref.get_literal ().is_equal (bref.get_literal ());
+	  }
+	  break;
+    case HIR::Pattern::PatternType::IDENTIFIER:
+	  {
+	    // TODO
+	  }
+	  break;
+    case HIR::Pattern::PatternType::WILDCARD:
+      return true;
+	  break;
+
+	  // TODO
+
+    default:;
+    }
+  return false;
+}
+
+
+struct PatternMerge
+{
+  std::vector<std::unique_ptr<HIR::Pattern>> heads;
+  std::vector<std::vector<HIR::MatchCase>> cases;
+};
+
+static struct PatternMerge
+sort_tuple_patterns (HIR::MatchExpr &expr)
+{
+  rust_assert (expr.get_scrutinee_expr ()->get_expression_type()
+	       == HIR::Expr::ExprType::Tuple);
+
+  struct PatternMerge result;
+  result.heads = std::vector<std::unique_ptr<HIR::Pattern>> ();
+  result.cases = std::vector<std::vector<HIR::MatchCase>> ();
+
+  for (auto &match_case : expr.get_match_cases ())
+    {
+      HIR::MatchArm &case_arm = match_case.get_arm ();
+
+      // TODO: Note we are only dealing with the first pattern in the arm.
+      // The patterns vector in the arm might hold many patterns, which are the patterns
+      // separated by the '|' token. Rustc abstracts these as "Or" patterns, and part of
+      // its simplification process is to get rid of them.
+      // We should get rid of the ORs too, maybe here or earlier than here?
+      auto pat = case_arm.get_patterns ()[0]->clone_pattern ();
+
+      // FIXME: wildcards.
+      if (pat->get_pattern_type() == HIR::Pattern::PatternType::WILDCARD)
+	{
+	  // The *whole* pattern is a wild card (_).
+	  continue;
+	}
+
+      rust_assert (pat->get_pattern_type () == HIR::Pattern::PatternType::TUPLE);
+
+      auto ref = *static_cast<HIR::TuplePattern*> (pat.get ());
+
+      rust_assert (ref.has_tuple_pattern_items());
+
+      auto items = HIR::TuplePattern (ref).get_items()->clone_tuple_pattern_items();
+      if (items->get_pattern_type() == HIR::TuplePatternItems::TuplePatternItemType::MULTIPLE)
+	{
+	  auto items_ref = *static_cast<HIR::TuplePatternItemsMultiple*>(items.get ());
+
+	  // Pop the first pattern out
+	  auto patterns = std::vector<std::unique_ptr<HIR::Pattern>> ();
+	  //auto patterns = items_ref.get_patterns ();
+	  auto first = items_ref.get_patterns()[0]->clone_pattern();
+	  for (auto p = items_ref.get_patterns().begin()+1; p != items_ref.get_patterns().end(); p++)
+	    {
+	      //std::unique_ptr<HIR::Pattern> pat = *p;
+	      patterns.push_back((*p)->clone_pattern());
+	    }
+
+	  //auto first = patterns[0]->clone_pattern ();
+	  //patterns.erase (patterns.begin ());
+
+	  // if there is only one pattern left, don't make a tuple out of it
+	  std::unique_ptr<HIR::Pattern> result_pattern;
+	  if (patterns.size () == 1)
+	    {
+	      result_pattern = std::move (patterns[0]);
+	    }
+	  else
+	    {
+	      auto new_items = std::unique_ptr<HIR::TuplePatternItems>
+		(new HIR::TuplePatternItemsMultiple (std::move (patterns)));
+
+		// Construct a TuplePattern from the rest of the patterns
+	      result_pattern = std::unique_ptr<HIR::Pattern> (
+		new HIR::TuplePattern (ref.get_pattern_mappings (),
+					std::move (new_items), ref.get_locus ()));
+	    }
+
+	  // I don't know why we need to make foo separately here but
+	  // using the { new_tuple } syntax in new_arm constructor does not compile.
+	  auto foo = std::vector<std::unique_ptr<HIR::Pattern>> ();
+	  foo.emplace_back (std::move (result_pattern));
+	  HIR::MatchArm new_arm (std::move (foo), Location (), nullptr, AST::AttrVec());
+
+	  HIR::MatchCase new_case (match_case.get_mappings (),
+				   new_arm,
+				   match_case.get_expr()->clone_expr());
+
+	  bool pushed = false;
+	  for (size_t i = 0; i < result.heads.size (); i++)
+	    {
+	      if (patterns_mergeable (result.heads[i].get (), first.get ()))
+		{
+		  result.cases[i].push_back (new_case);
+		  pushed = true;
+		}
+	    }
+
+	  if (!pushed)
+	    {
+	      result.heads.push_back (std::move (first));
+	      result.cases.push_back ( { new_case } );
+	    }
+
+	}
+      else /* TuplePatternItemType::RANGED */
+	{
+	  // FIXME
+	  // I dunno lol
+	}
+
+//      case_arm.get_patterns ().erase (case_arm.get_patterns().begin());
+    }
+
+  return result;
+
+}
+
 
 static HIR::MatchExpr
 simplify_tuple_match (HIR::MatchExpr &expr)
@@ -346,13 +518,21 @@ simplify_tuple_match (HIR::MatchExpr &expr)
   // a1 -> [(b1, c1) => { blk1 },
   //        (b3, c3) => { blk3 }]
   // a2 -> [(b2, c2) => { blk2 }]
+  #if 0
   auto map = organize_tuple_patterns (expr);
+  #else
+  struct PatternMerge map = sort_tuple_patterns (expr);
+  #endif
 
   //printf ("outer match scrutinee (head): %s\n\n", head->as_string().c_str ());
   std::vector<HIR::MatchCase> cases;
   // Construct the innter match for each unique first elt of the tuple
   // patterns
+  #if 0
   for (auto iter = map.begin (); iter != map.end (); ++iter)
+  #else
+  for (size_t i = 0; i < map.heads.size (); i++)
+  #endif
     {
 
       // match (tupB, tupC) {
@@ -360,24 +540,33 @@ simplify_tuple_match (HIR::MatchExpr &expr)
       //   (b3, c3) => { blk3 }
       // }
       HIR::MatchExpr inner_match (expr.get_mappings (), remaining->clone_expr(),
+				  #if 0
 				  iter->second, AST::AttrVec (),
+				  #else
+				  map.cases[i], AST::AttrVec (),
+				  #endif
 				  expr.get_outer_attrs (), expr.get_locus ());
+
       //printf ("unsimplified inner_match cases:\n");
-      for (auto &x : inner_match.get_match_cases()) {
+      //for (auto &x : inner_match.get_match_cases()) {
 	//printf ("%s\n", x.as_string().c_str());
-      }
+      //}
 
       inner_match = simplify_tuple_match (inner_match);
       //printf ("simplified inner_match cases:\n");
-      for (auto &x : inner_match.get_match_cases()) {
+      //for (auto &x : inner_match.get_match_cases()) {
 	//printf ("%s\n", x.as_string().c_str());
-      }
+      //}
 
       //printf ("outer_arm_pat: %s\n", iter->first->as_string ().c_str ());
       //printf ("outer_arm_pat type: %d\n\n", iter->first->get_pattern_type());
 
       auto outer_arm_pat = std::vector<std::unique_ptr<HIR::Pattern>> ();
+      #if 0
       outer_arm_pat.emplace_back (iter->first->clone_pattern ());
+      #else
+      outer_arm_pat.emplace_back (map.heads[i]->clone_pattern ());
+      #endif
       HIR::MatchArm outer_arm (std::move (outer_arm_pat), expr.get_locus ());
 
       // Need to move the inner match to the heap and put it in a unique_ptr to
@@ -701,7 +890,6 @@ CompileExpr::visit (HIR::MatchExpr &expr)
 	  CompilePatternBindings::Compile (kase_pattern.get (),
 					   match_scrutinee_expr, ctx);
 	}
-      printf("\n");
 
       // compile the expr and setup the assignment if required when tmp != NULL
       tree kase_expr_tree = CompileExpr::Compile (kase.get_expr ().get (), ctx);
@@ -721,6 +909,7 @@ CompileExpr::visit (HIR::MatchExpr &expr)
 					void_type_node, end_label);
       ctx->add_statement (goto_end_label);
     }
+  printf ("unfoo\n");
 
   // setup the switch expression
   tree match_body = ctx->pop_block ();
