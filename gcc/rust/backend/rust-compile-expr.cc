@@ -460,6 +460,82 @@ check_match_scrutinee (HIR::MatchExpr &expr, Context *ctx)
   return scrutinee_kind;
 }
 
+static void
+compile_rest_of_match (HIR::MatchExpr &expr, Context *ctx, Bvariable *tmp,
+		       tree scrutinee, tree qualified_scrutinee)
+{
+  fncontext fnctx = ctx->peek_fn ();
+  // setup the end label so the cases can exit properly
+  tree fndecl = fnctx.fndecl;
+  Location end_label_locus = expr.get_locus (); // FIXME
+  tree end_label
+    = ctx->get_backend ()->label (fndecl,
+				  "" /* empty creates an artificial label */,
+				  end_label_locus);
+  tree end_label_decl_statement
+    = ctx->get_backend ()->label_definition_statement (end_label);
+
+  // setup the switch-body-block
+  Location start_location; // FIXME
+  Location end_location;   // FIXME
+  tree enclosing_scope = ctx->peek_enclosing_scope ();
+  tree switch_body_block
+    = ctx->get_backend ()->block (fndecl, enclosing_scope, {}, start_location,
+				  end_location);
+  ctx->push_block (switch_body_block);
+
+  for (auto &kase : expr.get_match_cases ())
+    {
+      // for now lets just get single pattern's working
+      HIR::MatchArm &kase_arm = kase.get_arm ();
+      rust_assert (kase_arm.get_patterns ().size () > 0);
+
+      // generate implicit label
+      Location arm_locus = kase_arm.get_locus ();
+      tree case_label = ctx->get_backend ()->label (
+	fndecl, "" /* empty creates an artificial label */, arm_locus);
+
+      // setup the bindings for the block
+      for (auto &kase_pattern : kase_arm.get_patterns ())
+	{
+	  tree switch_kase_expr
+	    = CompilePatternCaseLabelExpr::Compile (kase_pattern.get (),
+						    case_label, ctx);
+	  ctx->add_statement (switch_kase_expr);
+
+	  CompilePatternBindings::Compile (kase_pattern.get (),
+					   scrutinee, ctx);
+	}
+
+      // compile the expr and setup the assignment if required when tmp != NULL
+      tree kase_expr_tree = CompileExpr::Compile (kase.get_expr ().get (), ctx);
+      if (tmp != NULL)
+	{
+	  tree result_reference
+	    = ctx->get_backend ()->var_expression (tmp, arm_locus);
+	  tree assignment
+	    = ctx->get_backend ()->assignment_statement (result_reference,
+							 kase_expr_tree,
+							 arm_locus);
+	  ctx->add_statement (assignment);
+	}
+
+      // go to end label
+      tree goto_end_label = build1_loc (arm_locus.gcc_location (), GOTO_EXPR,
+					void_type_node, end_label);
+      ctx->add_statement (goto_end_label);
+    }
+
+  // setup the switch expression
+  tree match_body = ctx->pop_block ();
+  tree match_expr_stmt
+    = build2_loc (expr.get_locus ().gcc_location (), SWITCH_EXPR,
+		  TREE_TYPE (qualified_scrutinee),
+		  qualified_scrutinee, match_body);
+  ctx->add_statement (match_expr_stmt);
+  ctx->add_statement (end_label_decl_statement);
+}
+
 void
 CompileExpr::visit (HIR::MatchExpr &expr)
 {
@@ -643,11 +719,11 @@ CompileExpr::visit (HIR::MatchExpr &expr)
 
 	 //   }
 	 //   break;
-	 case HIR::Expr::ExprType::Path:
-	   {
+	 // case HIR::Expr::ExprType::Path:
+	 //   {
 
-	   }
-	   break;
+	 //   }
+	 //   break;
 	 default:
 	   gcc_unreachable ();
        }
@@ -658,78 +734,10 @@ CompileExpr::visit (HIR::MatchExpr &expr)
       gcc_unreachable ();
     }
 
-  // setup the end label so the cases can exit properly
-  tree fndecl = fnctx.fndecl;
-  Location end_label_locus = expr.get_locus (); // FIXME
-  tree end_label
-    = ctx->get_backend ()->label (fndecl,
-				  "" /* empty creates an artificial label */,
-				  end_label_locus);
-  tree end_label_decl_statement
-    = ctx->get_backend ()->label_definition_statement (end_label);
-
-  // setup the switch-body-block
-  Location start_location; // FIXME
-  Location end_location;   // FIXME
-  tree enclosing_scope = ctx->peek_enclosing_scope ();
-  tree switch_body_block
-    = ctx->get_backend ()->block (fndecl, enclosing_scope, {}, start_location,
-				  end_location);
-  ctx->push_block (switch_body_block);
-
-  printf ("foo\n");
-  for (auto &kase : expr.get_match_cases ())
-    {
-      // for now lets just get single pattern's working
-      HIR::MatchArm &kase_arm = kase.get_arm ();
-      rust_assert (kase_arm.get_patterns ().size () > 0);
-
-      // generate implicit label
-      Location arm_locus = kase_arm.get_locus ();
-      tree case_label = ctx->get_backend ()->label (
-	fndecl, "" /* empty creates an artificial label */, arm_locus);
-
-      // setup the bindings for the block
-      for (auto &kase_pattern : kase_arm.get_patterns ())
-	{
-	  printf ("kase_pattern: %s\n", kase_pattern->as_string().c_str ());
-	  tree switch_kase_expr
-	    = CompilePatternCaseLabelExpr::Compile (kase_pattern.get (),
-						    case_label, ctx);
-	  ctx->add_statement (switch_kase_expr);
-
-	  CompilePatternBindings::Compile (kase_pattern.get (),
-					   match_scrutinee_expr, ctx);
-	}
-      printf("\n");
-
-      // compile the expr and setup the assignment if required when tmp != NULL
-      tree kase_expr_tree = CompileExpr::Compile (kase.get_expr ().get (), ctx);
-      if (tmp != NULL)
-	{
-	  tree result_reference
-	    = ctx->get_backend ()->var_expression (tmp, arm_locus);
-	  tree assignment
-	    = ctx->get_backend ()->assignment_statement (result_reference,
-							 kase_expr_tree,
-							 arm_locus);
-	  ctx->add_statement (assignment);
-	}
-
-      // go to end label
-      tree goto_end_label = build1_loc (arm_locus.gcc_location (), GOTO_EXPR,
-					void_type_node, end_label);
-      ctx->add_statement (goto_end_label);
-    }
-
-  // setup the switch expression
-  tree match_body = ctx->pop_block ();
-  tree match_expr_stmt
-    = build2_loc (expr.get_locus ().gcc_location (), SWITCH_EXPR,
-		  TREE_TYPE (match_scrutinee_expr_qualifier_expr),
-		  match_scrutinee_expr_qualifier_expr, match_body);
-  ctx->add_statement (match_expr_stmt);
-  ctx->add_statement (end_label_decl_statement);
+  // Compile the actual SWITCH_EXPR and its blocks, and push the resulting TREEs
+  // into the current compilation context.
+  compile_rest_of_match (expr, ctx, tmp, match_scrutinee_expr,
+			 match_scrutinee_expr_qualifier_expr);
 
   if (tmp != NULL)
     {
