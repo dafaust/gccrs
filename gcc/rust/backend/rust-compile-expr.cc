@@ -359,6 +359,7 @@ patterns_mergeable (HIR::Pattern *a, HIR::Pattern *b)
 
 struct PatternMerge
 {
+  std::unique_ptr<HIR::MatchCase> wildcard;
   std::vector<std::unique_ptr<HIR::Pattern>> heads;
   std::vector<std::vector<HIR::MatchCase>> cases;
 };
@@ -370,6 +371,7 @@ sort_tuple_patterns (HIR::MatchExpr &expr)
 	       == HIR::Expr::ExprType::Tuple);
 
   struct PatternMerge result;
+  result.wildcard = nullptr;
   result.heads = std::vector<std::unique_ptr<HIR::Pattern>> ();
   result.cases = std::vector<std::vector<HIR::MatchCase>> ();
 
@@ -388,6 +390,7 @@ sort_tuple_patterns (HIR::MatchExpr &expr)
       if (pat->get_pattern_type() == HIR::Pattern::PatternType::WILDCARD)
 	{
 	  // The *whole* pattern is a wild card (_).
+	  result.wildcard = std::unique_ptr<HIR::MatchCase> (new HIR::MatchCase (match_case));
 	  continue;
 	}
 
@@ -580,6 +583,11 @@ simplify_tuple_match (HIR::MatchExpr &expr)
       //printf ("\nouter_case: %s\n", outer_case.as_string().c_str());
 
       cases.push_back (outer_case);
+    }
+
+  if (map.wildcard != nullptr)
+    {
+      cases.push_back (*map.wildcard.release ());
     }
 
   // match tupA {
