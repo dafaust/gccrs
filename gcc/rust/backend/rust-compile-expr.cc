@@ -190,7 +190,12 @@ CompileExpr::visit (HIR::DereferenceExpr &expr)
 // tuple and construct a new MatchCase with the remaining tuple elts as the
 // pattern. Return a mapping from each _unique_ first tuple element to a
 // vec of cases for a new match.
-std::map<std::unique_ptr<HIR::Pattern>, std::vector<HIR::MatchCase>>
+//
+// FIXME: This map doesn't actually work like we want - the Pattern includes an HIR ID,
+// which is unique per Pattern object. This means two patterns which match the
+// same things won't hash to the same value.
+//
+static std::map<std::unique_ptr<HIR::Pattern>, std::vector<HIR::MatchCase>>
 organize_tuple_patterns (HIR::MatchExpr &expr)
 {
   rust_assert (expr.get_scrutinee_expr ()->get_expression_type()
@@ -211,9 +216,12 @@ organize_tuple_patterns (HIR::MatchExpr &expr)
       // We should get rid of the ORs too, maybe here or earlier than here?
       auto pat = case_arm.get_patterns ()[0]->clone_pattern ();
 
-      // TODO: wildcards?
+      // FIXME: wildcards.
       if (pat->get_pattern_type() == HIR::Pattern::PatternType::WILDCARD)
-	continue;
+	{
+	  // The *whole* pattern is a wild card (_).
+	  continue;
+	}
 
       rust_assert (pat->get_pattern_type () == HIR::Pattern::PatternType::TUPLE);
 
@@ -293,7 +301,7 @@ organize_tuple_patterns (HIR::MatchExpr &expr)
 }
 
 
-HIR::MatchExpr
+static HIR::MatchExpr
 simplify_tuple_match (HIR::MatchExpr &expr)
 {
   if (expr.get_scrutinee_expr()->get_expression_type () != HIR::Expr::ExprType::Tuple)
@@ -405,6 +413,51 @@ simplify_tuple_match (HIR::MatchExpr &expr)
   // printf ("%s\n---------\n", outer_match.as_string ().c_str() );
 
   return outer_match;
+}
+
+// Check that the scrutinee of EXPR is a valid kind of expression to match on.
+// Return the TypeKind of the scrutinee if it is valid, or TyTy::TypeKind::ERROR if not.
+static TyTy::TypeKind
+check_match_scrutinee (HIR::MatchExpr &expr, Context *ctx)
+{
+  TyTy::BaseType *scrutinee_expr_tyty = nullptr;
+  if (!ctx->get_tyctx ()->lookup_type (
+	expr.get_scrutinee_expr ()->get_mappings ().get_hirid (),
+	&scrutinee_expr_tyty))
+    {
+      return TyTy::TypeKind::ERROR;
+    }
+
+  TyTy::TypeKind scrutinee_kind = scrutinee_expr_tyty->get_kind ();
+  rust_assert ((TyTy::is_primitive_type_kind (scrutinee_kind)
+		&& scrutinee_kind != TyTy::TypeKind::NEVER)
+	       || scrutinee_kind == TyTy::TypeKind::ADT
+	       || scrutinee_kind == TyTy::TypeKind::TUPLE);
+
+  if (scrutinee_kind == TyTy::TypeKind::ADT)
+    {
+      // this will need to change but for now the first pass implementation,
+      // lets assert this is the case
+      TyTy::ADTType *adt = static_cast<TyTy::ADTType *> (scrutinee_expr_tyty);
+      rust_assert (adt->is_enum ());
+      rust_assert (adt->number_of_variants () > 0);
+    }
+  else if (scrutinee_kind == TyTy::TypeKind::FLOAT)
+    {
+      // FIXME: CASE_LABEL_EXPR does not support floating point types.
+      // Find another way to compile these.
+      sorry_at (expr.get_locus ().gcc_location (),
+		"match on floating-point types is not yet supported");
+    }
+
+  TyTy::BaseType *expr_tyty = nullptr;
+  if (!ctx->get_tyctx ()->lookup_type (expr.get_mappings ().get_hirid (),
+				       &expr_tyty))
+    {
+      return TyTy::TypeKind::ERROR;
+    }
+
+  return scrutinee_kind;
 }
 
 void
@@ -530,8 +583,6 @@ CompileExpr::visit (HIR::MatchExpr &expr)
 	     HIR::MatchExpr outer_match = simplify_tuple_match (expr);
 	     expr = outer_match;
 
-	     // FIXME: WTF!? The cases here have different patterns than the ones
-	     // JUST constructed in simplify_tuple_match...
 	     printf ("expr cases:\n");
 	     for (auto &x : expr.get_match_cases ())
 	       {
@@ -546,9 +597,44 @@ CompileExpr::visit (HIR::MatchExpr &expr)
 	     // ...
 	     // Really we want to just sort of, replace the current one with the
 	     // rearranged one in-place right now.
+	     //
+
+	     scrutinee_kind = check_match_scrutinee (expr, ctx);
+	     if (scrutinee_kind == TyTy::TypeKind::ERROR)
+	       {
+		 translated = error_mark_node;
+		 return;
+	       }
+
+
+	     // Now compile the scrutinee of the simplified match.
+	     // FIXME: this part is duplicated from above.
 	     match_scrutinee_expr
 	       = CompileExpr::Compile (expr.get_scrutinee_expr ().get (), ctx);
-	     match_scrutinee_expr_qualifier_expr = match_scrutinee_expr;
+
+	     if (TyTy::is_primitive_type_kind (scrutinee_kind))
+	       {
+		 match_scrutinee_expr_qualifier_expr = match_scrutinee_expr;
+	       }
+	     else if (scrutinee_kind == TyTy::TypeKind::ADT)
+	       {
+		 // need to access qualifier the field, if we use QUAL_UNION_TYPE this
+		 // would be DECL_QUALIFIER i think. For now this will just access the
+		 // first record field and its respective qualifier because it will always
+		 // be set because this is all a big special union
+		 tree scrutinee_first_record_expr
+		   = ctx->get_backend ()->struct_field_expression (
+			 match_scrutinee_expr, 0, expr.get_scrutinee_expr ()->get_locus ());
+		 match_scrutinee_expr_qualifier_expr
+		   = ctx->get_backend ()->struct_field_expression (
+			  scrutinee_first_record_expr, 0,
+			  expr.get_scrutinee_expr ()->get_locus ());
+	       }
+	     else {
+	       gcc_unreachable ();
+	     }
+
+	     //match_scrutinee_expr_qualifier_expr = match_scrutinee_expr;
 
 	   }
 	   break;
