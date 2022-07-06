@@ -482,9 +482,6 @@ simplify_tuple_match (HIR::MatchExpr &expr)
   if (expr.get_scrutinee_expr()->get_expression_type () != HIR::Expr::ExprType::Tuple)
     return expr;
 
-//  rust_assert (expr.get_scrutinee_expr ()->get_expression_type ()
-//	       == HIR::Expr::ExprType::Tuple);
-
   // 1. Cut off head from scrutinee S and each pattern P. Build a new
   //    match M out of the heads S of scrutinee and each pattern P.
   // 2. Build a new tuple match M' out of the tails S' and P' of
@@ -521,21 +518,12 @@ simplify_tuple_match (HIR::MatchExpr &expr)
   // a1 -> [(b1, c1) => { blk1 },
   //        (b3, c3) => { blk3 }]
   // a2 -> [(b2, c2) => { blk2 }]
-  #if 0
-  auto map = organize_tuple_patterns (expr);
-  #else
   struct PatternMerge map = sort_tuple_patterns (expr);
-  #endif
 
-  //printf ("outer match scrutinee (head): %s\n\n", head->as_string().c_str ());
   std::vector<HIR::MatchCase> cases;
   // Construct the innter match for each unique first elt of the tuple
   // patterns
-  #if 0
-  for (auto iter = map.begin (); iter != map.end (); ++iter)
-  #else
   for (size_t i = 0; i < map.heads.size (); i++)
-  #endif
     {
 
       auto inner_match_cases = map.cases[i];
@@ -559,20 +547,7 @@ simplify_tuple_match (HIR::MatchExpr &expr)
 				  #endif
 				  expr.get_outer_attrs (), expr.get_locus ());
 
-      //printf ("unsimplified inner_match cases:\n");
-      //for (auto &x : inner_match.get_match_cases()) {
-	//printf ("%s\n", x.as_string().c_str());
-      //}
-
       inner_match = simplify_tuple_match (inner_match);
-      //printf ("simplified inner_match cases:\n");
-      //for (auto &x : inner_match.get_match_cases()) {
-	//printf ("%s\n", x.as_string().c_str());
-      //}
-
-      //printf ("outer_arm_pat: %s\n", iter->first->as_string ().c_str ());
-      //printf ("outer_arm_pat type: %d\n\n", iter->first->get_pattern_type());
-
       auto outer_arm_pat = std::vector<std::unique_ptr<HIR::Pattern>> ();
       #if 0
       outer_arm_pat.emplace_back (iter->first->clone_pattern ());
@@ -589,7 +564,6 @@ simplify_tuple_match (HIR::MatchExpr &expr)
       // a1 => match (tupB, tupC) { ... }
       HIR::MatchCase outer_case (expr.get_mappings (), outer_arm,
 				 std::move (inner_expr));
-      //printf ("\nouter_case: %s\n", outer_case.as_string().c_str());
 
       cases.push_back (outer_case);
     }
@@ -612,12 +586,6 @@ simplify_tuple_match (HIR::MatchExpr &expr)
   HIR::MatchExpr outer_match (expr.get_mappings (), std::move (head), cases,
 			      AST::AttrVec (), expr.get_outer_attrs (),
 			      expr.get_locus ());
-  printf ("outer_match cases:\n");
-  for (auto &x : outer_match.get_match_cases ())
-    {
-      printf ("%s\n", x.as_string ().c_str ());
-    }
-  // printf ("%s\n---------\n", outer_match.as_string ().c_str() );
 
   return outer_match;
 }
@@ -790,12 +758,6 @@ CompileExpr::visit (HIR::MatchExpr &expr)
 	     HIR::MatchExpr outer_match = simplify_tuple_match (expr);
 	     expr = outer_match;
 
-	     printf ("expr cases:\n");
-	     for (auto &x : expr.get_match_cases ())
-	       {
-		 printf ("%s\n", x.as_string().c_str());
-	       }
-
 	     // What to do here...
 	     // We've rearranged the match into something that lowers better
 	     // to GIMPLE.
@@ -884,7 +846,6 @@ CompileExpr::visit (HIR::MatchExpr &expr)
 				  end_location);
   ctx->push_block (switch_body_block);
 
-  printf ("foo\n");
   for (auto &kase : expr.get_match_cases ())
     {
       // for now lets just get single pattern's working
@@ -899,7 +860,6 @@ CompileExpr::visit (HIR::MatchExpr &expr)
       // setup the bindings for the block
       for (auto &kase_pattern : kase_arm.get_patterns ())
 	{
-	  printf ("kase_pattern: %s\n", kase_pattern->as_string().c_str ());
 	  tree switch_kase_expr
 	    = CompilePatternCaseLabelExpr::Compile (kase_pattern.get (),
 						    case_label, ctx);
@@ -927,7 +887,6 @@ CompileExpr::visit (HIR::MatchExpr &expr)
 					void_type_node, end_label);
       ctx->add_statement (goto_end_label);
     }
-  printf ("unfoo\n");
 
   // setup the switch expression
   tree match_body = ctx->pop_block ();
