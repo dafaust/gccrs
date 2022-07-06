@@ -186,120 +186,7 @@ CompileExpr::visit (HIR::DereferenceExpr &expr)
 }
 
 
-// For each tuple pattern in a given match, pull out the first elt of the
-// tuple and construct a new MatchCase with the remaining tuple elts as the
-// pattern. Return a mapping from each _unique_ first tuple element to a
-// vec of cases for a new match.
-//
-// FIXME: This map doesn't actually work like we want - the Pattern includes an HIR ID,
-// which is unique per Pattern object. This means two patterns which match the
-// same things won't hash to the same value.
-//
-static std::map<std::unique_ptr<HIR::Pattern>, std::vector<HIR::MatchCase>>
-organize_tuple_patterns (HIR::MatchExpr &expr)
-{
-  rust_assert (expr.get_scrutinee_expr ()->get_expression_type()
-	       == HIR::Expr::ExprType::Tuple);
-
-  // Maps the first element of a tuple pattern to all the (sub-)patterns which
-  // start with that pattern
-  auto map = std::map<std::unique_ptr<HIR::Pattern>, std::vector<HIR::MatchCase>> ();
-
-  for (auto &match_case : expr.get_match_cases ())
-    {
-      HIR::MatchArm &case_arm = match_case.get_arm ();
-
-      // TODO: Note we are only dealing with the first pattern in the arm.
-      // The patterns vector in the arm might hold many patterns, which are the patterns
-      // separated by the '|' token. Rustc abstracts these as "Or" patterns, and part of
-      // its simplification process is to get rid of them.
-      // We should get rid of the ORs too, maybe here or earlier than here?
-      auto pat = case_arm.get_patterns ()[0]->clone_pattern ();
-
-      // FIXME: wildcards.
-      if (pat->get_pattern_type() == HIR::Pattern::PatternType::WILDCARD)
-	{
-	  // The *whole* pattern is a wild card (_).
-	  continue;
-	}
-
-      rust_assert (pat->get_pattern_type () == HIR::Pattern::PatternType::TUPLE);
-
-      auto ref = *static_cast<HIR::TuplePattern*> (pat.get ());
-
-      rust_assert (ref.has_tuple_pattern_items());
-
-      auto items = HIR::TuplePattern (ref).get_items()->clone_tuple_pattern_items();
-      if (items->get_pattern_type() == HIR::TuplePatternItems::TuplePatternItemType::MULTIPLE)
-	{
-	  auto items_ref = *static_cast<HIR::TuplePatternItemsMultiple*>(items.get ());
-
-	  // Pop the first pattern out
-	  auto patterns = std::vector<std::unique_ptr<HIR::Pattern>> ();
-	  //auto patterns = items_ref.get_patterns ();
-	  auto first = items_ref.get_patterns()[0]->clone_pattern();
-	  for (auto p = items_ref.get_patterns().begin()+1; p != items_ref.get_patterns().end(); p++)
-	    {
-	      //std::unique_ptr<HIR::Pattern> pat = *p;
-	      patterns.push_back((*p)->clone_pattern());
-	    }
-
-	  //auto first = patterns[0]->clone_pattern ();
-	  //patterns.erase (patterns.begin ());
-
-	  // if there is only one pattern left, don't make a tuple out of it
-	  std::unique_ptr<HIR::Pattern> result_pattern;
-	  if (patterns.size () == 1)
-	    {
-	      result_pattern = std::move (patterns[0]);
-	    }
-	  else
-	    {
-	      auto new_items = std::unique_ptr<HIR::TuplePatternItems>
-		(new HIR::TuplePatternItemsMultiple (std::move (patterns)));
-
-		// Construct a TuplePattern from the rest of the patterns
-	      result_pattern = std::unique_ptr<HIR::Pattern> (
-		new HIR::TuplePattern (ref.get_pattern_mappings (),
-					std::move (new_items), ref.get_locus ()));
-	    }
-
-	  // I don't know why we need to make foo separately here but
-	  // using the { new_tuple } syntax in new_arm constructor does not compile.
-	  auto foo = std::vector<std::unique_ptr<HIR::Pattern>> ();
-	  foo.emplace_back (std::move (result_pattern));
-	  HIR::MatchArm new_arm (std::move (foo), Location (), nullptr, AST::AttrVec());
-
-	  HIR::MatchCase new_case (match_case.get_mappings (),
-				   new_arm,
-				   match_case.get_expr()->clone_expr());
-
-	  auto search = map.find (first);
-	  if (search != map.end ())
-	    {
-	      //search->second.push_back(new_tuple);
-	      search->second.push_back(new_case);
-	    }
-	  else
-	    {
-	      //map[std::move (first)] = { std::move (new_tuple) };
-	      map[std::move(first)] = { new_case };
-	    }
-
-	}
-      else /* TuplePatternItemType::RANGED */
-	{
-	  // FIXME
-	  // I dunno lol
-	}
-
-//      case_arm.get_patterns ().erase (case_arm.get_patterns().begin());
-
-    }
-
-  return map;
-}
-
+// Helper for sort_tuple_patterns.
 // Determine whether Patterns a and b are really the same pattern.
 // FIXME: This is a nasty hack to avoid properly implementing a comparison
 //        for Patterns, which we really probably do want at some point.
@@ -357,6 +244,8 @@ patterns_mergeable (HIR::Pattern *a, HIR::Pattern *b)
 }
 
 
+// A little container for rearranging the patterns and cases in a match
+// expression while simplifying.
 struct PatternMerge
 {
   std::unique_ptr<HIR::MatchCase> wildcard;
@@ -364,6 +253,18 @@ struct PatternMerge
   std::vector<std::vector<HIR::MatchCase>> cases;
 };
 
+// Helper for simplify_tuple_match.
+// For each tuple pattern in a given match, pull out the first elt of the
+// tuple and construct a new MatchCase with the remaining tuple elts as the
+// pattern. Return a mapping from each _unique_ first tuple element to a
+// vec of cases for a new match.
+//
+// FIXME: This used to be a std::map<Pattern, Vec<MatchCase>>, but it doesn't
+// actually work like we want - the Pattern includes an HIR ID, which is unique
+// per Pattern object. This means we don't have a good means for comparing
+// Patterns. It would probably be best to actually implement a means of
+// properly comparing patterns, and then use an actual map.
+//
 static struct PatternMerge
 sort_tuple_patterns (HIR::MatchExpr &expr)
 {
@@ -386,7 +287,7 @@ sort_tuple_patterns (HIR::MatchExpr &expr)
       // We should get rid of the ORs too, maybe here or earlier than here?
       auto pat = case_arm.get_patterns ()[0]->clone_pattern ();
 
-      // FIXME: wildcards.
+      // Record wildcards so we can add them in inner matches.
       if (pat->get_pattern_type() == HIR::Pattern::PatternType::WILDCARD)
 	{
 	  // The *whole* pattern is a wild card (_).
@@ -407,16 +308,11 @@ sort_tuple_patterns (HIR::MatchExpr &expr)
 
 	  // Pop the first pattern out
 	  auto patterns = std::vector<std::unique_ptr<HIR::Pattern>> ();
-	  //auto patterns = items_ref.get_patterns ();
 	  auto first = items_ref.get_patterns()[0]->clone_pattern();
 	  for (auto p = items_ref.get_patterns().begin()+1; p != items_ref.get_patterns().end(); p++)
 	    {
-	      //std::unique_ptr<HIR::Pattern> pat = *p;
 	      patterns.push_back((*p)->clone_pattern());
 	    }
-
-	  //auto first = patterns[0]->clone_pattern ();
-	  //patterns.erase (patterns.begin ());
 
 	  // if there is only one pattern left, don't make a tuple out of it
 	  std::unique_ptr<HIR::Pattern> result_pattern;
@@ -465,14 +361,12 @@ sort_tuple_patterns (HIR::MatchExpr &expr)
       else /* TuplePatternItemType::RANGED */
 	{
 	  // FIXME
-	  // I dunno lol
+	  gcc_unreachable ();
 	}
 
-//      case_arm.get_patterns ().erase (case_arm.get_patterns().begin());
     }
 
   return result;
-
 }
 
 
@@ -530,6 +424,10 @@ simplify_tuple_match (HIR::MatchExpr &expr)
 
       // If there is a wildcard at the outer match level, then need to
       // propegate the wildcard case into *every* inner match.
+      // FIXME: It is probably not correct to add this unconditionally, what if we
+      // have a pattern like (a, _, c)? Then there is already a wildcard in
+      // the inner matches, and having two will cause two 'default:' blocks
+      // which is an error.
       if (map.wildcard != nullptr)
 	{
 	  inner_match_cases.push_back(*(map.wildcard.get ()));
@@ -749,7 +647,6 @@ CompileExpr::visit (HIR::MatchExpr &expr)
     {
       // match on tuple becomes a series of nested switches, with one level
       // for each element of the tuple from left to right.
-     //TyTy::TupleType *tupty = static_cast<TyTy::TupleType *> (scrutinee_expr_tyty);
      auto exprtype = expr.get_scrutinee_expr ()->get_expression_type ();
      switch (exprtype)
        {
@@ -767,7 +664,6 @@ CompileExpr::visit (HIR::MatchExpr &expr)
 	     // Really we want to just sort of, replace the current one with the
 	     // rearranged one in-place right now.
 	     //
-
 	     scrutinee_kind = check_match_scrutinee (expr, ctx);
 	     if (scrutinee_kind == TyTy::TypeKind::ERROR)
 	       {
@@ -799,24 +695,26 @@ CompileExpr::visit (HIR::MatchExpr &expr)
 			  scrutinee_first_record_expr, 0,
 			  expr.get_scrutinee_expr ()->get_locus ());
 	       }
-	     else {
-	       gcc_unreachable ();
-	     }
-
-	     //match_scrutinee_expr_qualifier_expr = match_scrutinee_expr;
-
-	   }
-	   break;
-	 // case HIR::Expr::ExprType::Ident:
-	 //   {
-
-	 //   }
-	 //   break;
-	 case HIR::Expr::ExprType::Path:
-	   {
+	     else
+	       {
+		 gcc_unreachable ();
+	       }
 
 	   }
 	   break;
+
+	   case HIR::Expr::ExprType::Ident: {
+	     // FIXME
+	     gcc_unreachable ();
+	   }
+	   break;
+
+	   case HIR::Expr::ExprType::Path: {
+	     // FIXME
+	     gcc_unreachable ();
+	   }
+	   break;
+
 	 default:
 	   gcc_unreachable ();
        }
