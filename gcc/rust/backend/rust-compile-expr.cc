@@ -538,6 +538,15 @@ simplify_tuple_match (HIR::MatchExpr &expr)
   #endif
     {
 
+      auto inner_match_cases = map.cases[i];
+
+      // If there is a wildcard at the outer match level, then need to
+      // propegate the wildcard case into *every* inner match.
+      if (map.wildcard != nullptr)
+	{
+	  inner_match_cases.push_back(*(map.wildcard.get ()));
+	}
+
       // match (tupB, tupC) {
       //   (b1, c1) => { blk1 },
       //   (b3, c3) => { blk3 }
@@ -546,7 +555,7 @@ simplify_tuple_match (HIR::MatchExpr &expr)
 				  #if 0
 				  iter->second, AST::AttrVec (),
 				  #else
-				  map.cases[i], AST::AttrVec (),
+				  inner_match_cases, AST::AttrVec (),
 				  #endif
 				  expr.get_outer_attrs (), expr.get_locus ());
 
@@ -585,9 +594,10 @@ simplify_tuple_match (HIR::MatchExpr &expr)
       cases.push_back (outer_case);
     }
 
+  // If there was a wildcard, make sure to include it at the outer match level too.
   if (map.wildcard != nullptr)
     {
-      cases.push_back (*map.wildcard.release ());
+      cases.push_back (*(map.wildcard.get ()));
     }
 
   // match tupA {
