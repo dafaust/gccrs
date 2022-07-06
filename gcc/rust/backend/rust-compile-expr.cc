@@ -565,35 +565,11 @@ CompileExpr::visit (HIR::MatchExpr &expr)
        the control flow graph.  */
   // DEFTREECODE (CASE_LABEL_EXPR, "case_label_expr", tcc_statement, 4)
 
-  TyTy::BaseType *scrutinee_expr_tyty = nullptr;
-  if (!ctx->get_tyctx ()->lookup_type (
-	expr.get_scrutinee_expr ()->get_mappings ().get_hirid (),
-	&scrutinee_expr_tyty))
+  TyTy::TypeKind scrutinee_kind = check_match_scrutinee (expr, ctx);
+  if (scrutinee_kind == TyTy::TypeKind::ERROR)
     {
       translated = error_mark_node;
       return;
-    }
-
-  TyTy::TypeKind scrutinee_kind = scrutinee_expr_tyty->get_kind ();
-  rust_assert ((TyTy::is_primitive_type_kind (scrutinee_kind)
-		&& scrutinee_kind != TyTy::TypeKind::NEVER)
-	       || scrutinee_kind == TyTy::TypeKind::ADT
-	       || scrutinee_kind == TyTy::TypeKind::TUPLE);
-
-  if (scrutinee_kind == TyTy::TypeKind::ADT)
-    {
-      // this will need to change but for now the first pass implementation,
-      // lets assert this is the case
-      TyTy::ADTType *adt = static_cast<TyTy::ADTType *> (scrutinee_expr_tyty);
-      rust_assert (adt->is_enum ());
-      rust_assert (adt->number_of_variants () > 0);
-    }
-  else if (scrutinee_kind == TyTy::TypeKind::FLOAT)
-    {
-      // FIXME: CASE_LABEL_EXPR does not support floating point types.
-      // Find another way to compile these.
-      sorry_at (expr.get_locus ().gcc_location (),
-		"match on floating-point types is not yet supported");
     }
 
   TyTy::BaseType *expr_tyty = nullptr;
