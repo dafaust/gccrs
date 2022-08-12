@@ -693,6 +693,24 @@ CompileExpr::visit (HIR::MatchExpr &expr)
 	  break;
 
 	  case HIR::Expr::ExprType::Path: {
+
+	    // A path such as
+	    //   let x = (Foo::A, 5u8);
+	    //   match x { ... }
+	    // Here the scrutinee, x, is a PathInExpression
+	    // ... and not an ident ..?
+
+	    // This will be very similar to the above where the scrutinee is
+	    // explicitly a tuple, we just need to get the components out of
+	    // it so we can rearrange the match as needed.
+
+	    auto scrutinee = expr.get_scrutinee_expr ().get ();
+	    printf ("%s\n", expr.as_string ().c_str ());
+	    printf ("%s\n", scrutinee->as_string ().c_str ());
+
+	    TyTy::BaseType *lookup = nullptr;
+	    bool ok = ctx->get_tyctx ()->lookup_type ((scrutinee->get_mappings ().get_hirid ()), &lookup);
+
 	    // FIXME
 	    gcc_unreachable ();
 	  }
