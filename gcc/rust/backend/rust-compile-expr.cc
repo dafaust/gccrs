@@ -524,8 +524,8 @@ tree foo (HIR::MatchExpr &expr, std::vector<HIR::MatchCase> cases,
 
   struct PatternMerge map = sort_tuple_patterns (cases);
 
-  if (TREE_CODE (match_scrutinee_expr) == VAR_DECL
-      && TREE_CODE (TREE_TYPE (match_scrutinee_expr)) == RECORD_TYPE)
+  //if (TREE_CODE (match_scrutinee_expr) == VAR_DECL
+  //   && TREE_CODE (TREE_TYPE (match_scrutinee_expr)) == RECORD_TYPE)
     {
       tree field = ctx->get_backend ()->struct_field_expression (match_scrutinee_expr, index, expr.get_locus ());
 
@@ -558,6 +558,7 @@ tree foo (HIR::MatchExpr &expr, std::vector<HIR::MatchCase> cases,
 
 	      // compile the expr and setup the assignment if required when tmp
 	      // != NULL
+	      // FIXME: How do we deal with needing temporaries here?
 	      tree kase_expr_tree
 		= CompileExpr::Compile (kase.get_expr ().get (), ctx);
 
@@ -593,6 +594,7 @@ tree foo (HIR::MatchExpr &expr, std::vector<HIR::MatchCase> cases,
 	  //////
 
 	  // compile the expression that goes along with it - recursive
+	  // NOTE: the return value is only used for debugging
 	  tree case_expr_tree = foo (expr, map.cases[i], match_scrutinee_expr, index + 1, ctx);
 
 	  // COPIED - go to end label
@@ -829,27 +831,19 @@ CompileExpr::visit (HIR::MatchExpr &expr)
 	    // it so we can rearrange the match as needed.
 
 	    auto scrutinee = expr.get_scrutinee_expr ().get ();
-	    printf ("%s\n", expr.as_string ().c_str ());
-	    printf ("%s\n", scrutinee->as_string ().c_str ());
 
-	    if (TREE_CODE (match_scrutinee_expr) == VAR_DECL)
+	    // FIXME: Are there other cases where we can have a Path?
+	    if (TREE_CODE (match_scrutinee_expr) == VAR_DECL
+		|| TREE_CODE (match_scrutinee_expr) == PARM_DECL)
 	      {
-		if (TREE_CODE (TREE_TYPE (match_scrutinee_expr)) == RECORD_TYPE)
-		  {
-		    // tree field = ctx->get_backend ()->struct_field_expression(match_scrutinee_expr,
-		    // 							      0, expr.get_scrutinee_expr ()->get_locus ());
-		    // if (field == NULL_TREE)
-		    //   {
-		    // 	gcc_assert (0);
-		    //   }
-		    tree result = foo (expr, expr.get_match_cases(), match_scrutinee_expr, 0, ctx);
+		tree result = foo (expr, expr.get_match_cases (),
+				   match_scrutinee_expr, 0, ctx);
 
-		    if (result == NULL_TREE)
-		      {
-			gcc_assert (0);
-		      }
-		    return;
+		if (result == NULL_TREE)
+		  {
+		    printf ("foo"); // so we can break here;
 		  }
+		return;
 	      }
 
 	    TyTy::BaseType *lookup = nullptr;
