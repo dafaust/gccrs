@@ -498,7 +498,7 @@ simplify_tuple_match (HIR::MatchExpr &expr)
 }
 
 tree foo (HIR::MatchExpr &expr, std::vector<HIR::MatchCase> cases,
-	  tree match_scrutinee_expr, size_t index,  Context *ctx)
+	  tree match_scrutinee_expr, size_t index,  Context *ctx, Bvariable *tmp)
 {
   // COPIED -
   fncontext fnctx = ctx->peek_fn ();
@@ -572,10 +572,19 @@ tree foo (HIR::MatchExpr &expr, std::vector<HIR::MatchCase> cases,
 
 	      // compile the expr and setup the assignment if required when tmp
 	      // != NULL
-	      // FIXME: How do we deal with needing temporaries here?
 	      // NOTE: this compile step pushes the actual case expr into the ctx
 	      tree kase_expr_tree
 		= CompileExpr::Compile (kase.get_expr ().get (), ctx);
+
+	      // FIXME: is it right to do this here?
+	      if (tmp != NULL)
+		{
+		  tree result_reference
+		    = ctx->get_backend ()->var_expression (tmp, arm_locus);
+		  tree assignment = ctx->get_backend ()->assignment_statement (
+		    result_reference, kase_expr_tree, arm_locus);
+		  ctx->add_statement (assignment);
+		}
 
 	      // go to end label
 	      tree goto_end_label
@@ -627,7 +636,7 @@ tree foo (HIR::MatchExpr &expr, std::vector<HIR::MatchCase> cases,
 	      // compile the expression that goes along with it - recursive
 	      // NOTE: the return value is only used for debugging
 	      tree case_expr_tree = foo (expr, map.cases[i],
-					 match_scrutinee_expr, index + 1, ctx);
+					 match_scrutinee_expr, index + 1, ctx, tmp);
 
 	      // COPIED - go to end label
 	      tree goto_end_label
@@ -821,7 +830,7 @@ CompileExpr::visit (HIR::MatchExpr &expr)
 	{
 	  case HIR::Expr::ExprType::Tuple: {
 	    tree result = foo (expr, expr.get_match_cases (),
-			       match_scrutinee_expr, 0, ctx);
+			       match_scrutinee_expr, 0, ctx, tmp);
 
 	    return;
 
@@ -906,7 +915,7 @@ CompileExpr::visit (HIR::MatchExpr &expr)
 		// currently this does all the rest of the compilation including
 		// pushing the statements into the ctx.
 		tree result = foo (expr, expr.get_match_cases (),
-				   match_scrutinee_expr, 0, ctx);
+				   match_scrutinee_expr, 0, ctx, tmp);
 
 		if (result == NULL_TREE)
 		  {
