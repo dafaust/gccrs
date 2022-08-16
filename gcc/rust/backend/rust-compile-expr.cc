@@ -510,7 +510,7 @@ compile_tuple_match (HIR::MatchExpr &expr, std::vector<HIR::MatchCase> cases,
 		     tree match_scrutinee_expr, size_t index, Context *ctx,
 		     Bvariable *tmp)
 {
-  // COPIED -
+  // COPIED - boilerplate-ish setup for the switch expression.
   fncontext fnctx = ctx->peek_fn ();
   // setup the end label so the cases can exit properly
   tree fndecl = fnctx.fndecl;
@@ -536,8 +536,8 @@ compile_tuple_match (HIR::MatchExpr &expr, std::vector<HIR::MatchCase> cases,
 
   tree field = ctx->get_backend ()->struct_field_expression (
     match_scrutinee_expr, index, expr.get_scrutinee_expr ()->get_locus ());
-  tree match_scrutinee_expr_qualifier_expr = field;
 
+  tree match_scrutinee_expr_qualifier_expr = field;
   if (TREE_CODE (TREE_TYPE (field)) == UNION_TYPE)
     {
       tree scrutinee_first_record_expr
@@ -552,8 +552,10 @@ compile_tuple_match (HIR::MatchExpr &expr, std::vector<HIR::MatchCase> cases,
 
   if (map.heads.size () == 0)
     {
-      // No heads means this is the end of recursion - just compile the cases
-      // HERE and return the resulting switch.
+      // Base case: no 'heads' means that all cases left at this point are
+      // simple single patterns - or at least, not tuples.
+      // So we can just compile all the cases directly. This might include
+      // a wildcard propegated-in from an outer match.
       for (auto &kase : cases)
 	{
 	  // for now lets just get single pattern's working
@@ -577,7 +579,7 @@ compile_tuple_match (HIR::MatchExpr &expr, std::vector<HIR::MatchCase> cases,
 					       match_scrutinee_expr, ctx);
 	    }
 
-	  // NOTE: this compile step pushes the actual case expr into the ctx
+	  // Compile the expression for the match arm and push it into ctx.
 	  tree kase_expr_tree
 	    = CompileExpr::Compile (kase.get_expr ().get (), ctx);
 
@@ -603,15 +605,16 @@ compile_tuple_match (HIR::MatchExpr &expr, std::vector<HIR::MatchCase> cases,
 
   else
     {
-      // Otherwise, each head corresponds to another sub-match we must make
-      // in the recursive step here.
+      // Otherwise, each 'head' is a unique pattern at the current level of the
+      // match, and has an associated set of cases that should be used to
+      // construct an interior, simpler, match.
       for (size_t i = 0; i < map.heads.size (); i++)
 	{
 	  // The head is NOT a tuple pattern
 	  //
 	  // generate implicit label
 	  // Location arm_locus = map.heads[i].get_locus ();
-	  Location arm_locus = expr.get_locus (); // FIXME
+	  Location arm_locus = map.heads[i]->get_locus (); // FIXME
 	  tree case_label = ctx->get_backend ()->label (
 	    fndecl, "" /* empty creates an artificial label */, arm_locus);
 
@@ -621,7 +624,7 @@ compile_tuple_match (HIR::MatchExpr &expr, std::vector<HIR::MatchCase> cases,
 
 	  // COPIED - add the case label
 	  ctx->add_statement (switch_kase_expr);
-	  // TODO: is this match_scrutinee_expr correct?
+	  // TODO: is this match_scrutinee_expr correct? or should it be field?
 	  CompilePatternBindings::Compile (map.heads[i].get (),
 					   match_scrutinee_expr, ctx);
 	  //////
@@ -640,7 +643,8 @@ compile_tuple_match (HIR::MatchExpr &expr, std::vector<HIR::MatchCase> cases,
 	  // default so we won't correctly hit the wildcard blk2.
 	  map.cases[i].push_back (*(map.wildcard.get ()));
 
-	  // compile the expression that goes along with it - recursive
+	  // Now compile the body for this case - an interior match on the next
+	  // element of the original scrutinee.
 	  compile_tuple_match (expr, map.cases[i], match_scrutinee_expr, index + 1, ctx, tmp);
 
 	  // COPIED - go to end label
@@ -687,7 +691,6 @@ compile_tuple_match (HIR::MatchExpr &expr, std::vector<HIR::MatchCase> cases,
 
   ctx->add_statement (match_expr_stmt);
   ctx->add_statement (end_label_decl_statement);
-
 }
 
 // Helper for CompileExpr::visit (HIR::MatchExpr).
