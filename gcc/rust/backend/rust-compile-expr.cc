@@ -585,63 +585,83 @@ tree foo (HIR::MatchExpr &expr, std::vector<HIR::MatchCase> cases,
 	    }
 	}
 
-      // Otherwise, each head corresponds to another sub-match we must make
-      // in the recursive step here.
-      for (size_t i = 0; i < map.heads.size (); i++)
+      else
 	{
-	  // The head is NOT a tuple pattern
-	  //
-	  // generate implicit label
-	  //Location arm_locus = map.heads[i].get_locus ();
-	  Location arm_locus = expr.get_locus (); // FIXME
-	  tree case_label = ctx->get_backend ()->label (
-							fndecl, "" /* empty creates an artificial label */, arm_locus);
+	  // Otherwise, each head corresponds to another sub-match we must make
+	  // in the recursive step here.
+	  for (size_t i = 0; i < map.heads.size (); i++)
+	    {
+	      // The head is NOT a tuple pattern
+	      //
+	      // generate implicit label
+	      // Location arm_locus = map.heads[i].get_locus ();
+	      Location arm_locus = expr.get_locus (); // FIXME
+	      tree case_label = ctx->get_backend ()->label (
+		fndecl, "" /* empty creates an artificial label */, arm_locus);
 
-	  tree switch_kase_expr
-	    = CompilePatternCaseLabelExpr::Compile (map.heads[i].get (),
-						    case_label, ctx);
+	      tree switch_kase_expr
+		= CompilePatternCaseLabelExpr::Compile (map.heads[i].get (),
+							case_label, ctx);
 
-	  // COPIED - add the case label
-	  ctx->add_statement (switch_kase_expr);
-	  //TODO: is this match_scrutinee_expr correct?
-	  CompilePatternBindings::Compile (map.heads[i].get (),
-					   match_scrutinee_expr, ctx);
-	  //////
+	      // COPIED - add the case label
+	      ctx->add_statement (switch_kase_expr);
+	      // TODO: is this match_scrutinee_expr correct?
+	      CompilePatternBindings::Compile (map.heads[i].get (),
+					       match_scrutinee_expr, ctx);
+	      //////
 
-	  // compile the expression that goes along with it - recursive
-	  // NOTE: the return value is only used for debugging
-	  tree case_expr_tree = foo (expr, map.cases[i], match_scrutinee_expr, index + 1, ctx);
+	      // Wildcard propegation: e.g.
+	      // match (Foo::B, 3) {
+	      //  (Foo::B, 2) => { blk1}
+	      //  _ => { blk2}
+	      // }
+	      // When we make the match:
+	      //   match tmp.1 {
+	      //    Foo::B => { inner_match }
+	      // }
+	      // We must propegate a wildcard into the inner match, since the
+	      // Foo::B part will match. Otherwise the inner will have no
+	      // default so we won't correctly hit the wildcard blk2.
+	      map.cases[i].push_back (*(map.wildcard.get ()));
 
-	  // COPIED - go to end label
-	  tree goto_end_label = build1_loc (arm_locus.gcc_location (), GOTO_EXPR,
-					    void_type_node, end_label);
-	  ctx->add_statement (goto_end_label);
-	  //////
-	}
+	      // compile the expression that goes along with it - recursive
+	      // NOTE: the return value is only used for debugging
+	      tree case_expr_tree = foo (expr, map.cases[i],
+					 match_scrutinee_expr, index + 1, ctx);
 
-      // TODO: Wildcard case
-      if (map.wildcard != nullptr)
-	{
-	  Location arm_locus = expr.get_locus (); // FIXME
-	  tree case_label = ctx->get_backend ()->label (
-	    fndecl, "" /* empty creates an artificial label */, arm_locus);
+	      // COPIED - go to end label
+	      tree goto_end_label
+		= build1_loc (arm_locus.gcc_location (), GOTO_EXPR,
+			      void_type_node, end_label);
+	      ctx->add_statement (goto_end_label);
+	      //////
+	    }
 
-	  tree switch_kase_expr
-	    = CompilePatternCaseLabelExpr::Compile (map.wildcard->get_arm().get_patterns ()[0].get (),
-						    case_label, ctx);
-	  ctx->add_statement (switch_kase_expr);
-	  // TODO: is this match_scrutinee_expr correct?
-	  CompilePatternBindings::Compile (map.wildcard->get_arm().get_patterns ()[0].get (),
-					   match_scrutinee_expr, ctx);
+	  // Wildcard at the outer level.
+	  if (map.wildcard != nullptr)
+	    {
+	      Location arm_locus = expr.get_locus (); // FIXME
+	      tree case_label = ctx->get_backend ()->label (
+		fndecl, "" /* empty creates an artificial label */, arm_locus);
 
-	  CompileExpr::Compile (map.wildcard->get_expr().get (), ctx);
+	      tree switch_kase_expr = CompilePatternCaseLabelExpr::Compile (
+		map.wildcard->get_arm ().get_patterns ()[0].get (), case_label,
+		ctx);
+	      ctx->add_statement (switch_kase_expr);
+	      // TODO: is this match_scrutinee_expr correct?
+	      CompilePatternBindings::Compile (
+		map.wildcard->get_arm ().get_patterns ()[0].get (),
+		match_scrutinee_expr, ctx);
 
-	  // COPIED - go to end label
-	  tree goto_end_label
-	    = build1_loc (arm_locus.gcc_location (), GOTO_EXPR, void_type_node,
-			  end_label);
-	  ctx->add_statement (goto_end_label);
-	  //////
+	      CompileExpr::Compile (map.wildcard->get_expr ().get (), ctx);
+
+	      // COPIED - go to end label
+	      tree goto_end_label
+		= build1_loc (arm_locus.gcc_location (), GOTO_EXPR,
+			      void_type_node, end_label);
+	      ctx->add_statement (goto_end_label);
+	      //////
+	    }
 	}
 
       // setup the switch expression
@@ -800,6 +820,12 @@ CompileExpr::visit (HIR::MatchExpr &expr)
       switch (exprtype)
 	{
 	  case HIR::Expr::ExprType::Tuple: {
+	    tree result = foo (expr, expr.get_match_cases (),
+			       match_scrutinee_expr, 0, ctx);
+
+	    return;
+
+#if 0
 	    // Build an equivalent expression which is nicer to lower.
 	    HIR::MatchExpr outer_match = simplify_tuple_match (expr);
 
@@ -855,6 +881,7 @@ CompileExpr::visit (HIR::MatchExpr &expr)
 		// FIXME: There are other cases, but it better not be a Tuple
 		gcc_unreachable ();
 	      }
+#endif
 	  }
 	  break;
 
@@ -876,6 +903,8 @@ CompileExpr::visit (HIR::MatchExpr &expr)
 	    if (TREE_CODE (match_scrutinee_expr) == VAR_DECL
 		|| TREE_CODE (match_scrutinee_expr) == PARM_DECL)
 	      {
+		// currently this does all the rest of the compilation including
+		// pushing the statements into the ctx.
 		tree result = foo (expr, expr.get_match_cases (),
 				   match_scrutinee_expr, 0, ctx);
 
@@ -885,14 +914,6 @@ CompileExpr::visit (HIR::MatchExpr &expr)
 		  }
 		return;
 	      }
-
-	    TyTy::BaseType *lookup = nullptr;
-	    bool ok = ctx->get_tyctx ()->lookup_type ((scrutinee->get_mappings ().get_hirid ()), &lookup);
-	    rust_assert (ok);
-
-
-	    // FIXME
-	    // gcc_unreachable ();
 	  }
 	  break;
 
