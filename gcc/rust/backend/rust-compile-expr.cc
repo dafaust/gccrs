@@ -576,7 +576,7 @@ compile_tuple_match (HIR::MatchExpr &expr, std::vector<HIR::MatchCase> cases,
 	      ctx->add_statement (switch_kase_expr);
 
 	      CompilePatternBindings::Compile (kase_pattern.get (),
-					       match_scrutinee_expr, ctx);
+					       field, ctx);
 	    }
 
 	  // Compile the expression for the match arm and push it into ctx.
@@ -624,9 +624,9 @@ compile_tuple_match (HIR::MatchExpr &expr, std::vector<HIR::MatchCase> cases,
 
 	  // COPIED - add the case label
 	  ctx->add_statement (switch_kase_expr);
-	  // TODO: is this match_scrutinee_expr correct? or should it be field?
+	  // TODO: is field the correct thing to pass here?
 	  CompilePatternBindings::Compile (map.heads[i].get (),
-					   match_scrutinee_expr, ctx);
+					   field, ctx);
 	  //////
 
 	  // Wildcard propegation: e.g.
