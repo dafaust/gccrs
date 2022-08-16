@@ -497,8 +497,18 @@ simplify_tuple_match (HIR::MatchExpr &expr)
   return outer_match;
 }
 
-tree foo (HIR::MatchExpr &expr, std::vector<HIR::MatchCase> cases,
-	  tree match_scrutinee_expr, size_t index,  Context *ctx, Bvariable *tmp)
+// EXPR is the original MatchExpr.
+// CASES is the relevant set of MatchCases. In the initial call this is just
+//       expr.get_match_cases ().
+// MATCH_SCRUTINEE_EXPR is the original result of compiling expr.scrutinee_expr
+// INDEX is the index into the scrutinee being compiled, and therefore doubles
+//       as a sort of recursion counter. In the initial call this should be 0.
+// CTX is a handle to the context so we can push statements etc.
+// TMP is the Bvariable we might need to assign to.
+static void
+compile_tuple_match (HIR::MatchExpr &expr, std::vector<HIR::MatchCase> cases,
+		     tree match_scrutinee_expr, size_t index, Context *ctx,
+		     Bvariable *tmp)
 {
   // COPIED -
   fncontext fnctx = ctx->peek_fn ();
@@ -524,168 +534,160 @@ tree foo (HIR::MatchExpr &expr, std::vector<HIR::MatchCase> cases,
 
   struct PatternMerge map = sort_tuple_patterns (cases);
 
-  //if (TREE_CODE (match_scrutinee_expr) == VAR_DECL
-  //   && TREE_CODE (TREE_TYPE (match_scrutinee_expr)) == RECORD_TYPE)
+  tree field = ctx->get_backend ()->struct_field_expression (
+    match_scrutinee_expr, index, expr.get_scrutinee_expr ()->get_locus ());
+  tree match_scrutinee_expr_qualifier_expr = field;
+
+  if (TREE_CODE (TREE_TYPE (field)) == UNION_TYPE)
     {
-      tree field = ctx->get_backend ()->struct_field_expression (match_scrutinee_expr,
-								 index,
-								 expr.get_scrutinee_expr ()->get_locus ());
-      tree match_scrutinee_expr_qualifier_expr = field;
+      tree scrutinee_first_record_expr
+	= ctx->get_backend ()->struct_field_expression (
+	  field, 0, expr.get_scrutinee_expr ()->get_locus ());
 
-      if (TREE_CODE (TREE_TYPE (field)) == UNION_TYPE)
-	{
-	  tree scrutinee_first_record_expr
-	    = ctx->get_backend ()->struct_field_expression (
-	      field, 0, expr.get_scrutinee_expr ()->get_locus ());
-
-	  match_scrutinee_expr_qualifier_expr
-	    = ctx->get_backend ()->struct_field_expression(
-	      scrutinee_first_record_expr, 0, expr.get_scrutinee_expr()->get_locus ());
-	}
-
-      if (map.heads.size () == 0)
-	{
-	  // No heads means this is the end of recursion - just compile the cases HERE and return the
-	  // resulting switch.
-	  for (auto &kase : cases)
-	    {
-	      // for now lets just get single pattern's working
-	      HIR::MatchArm &kase_arm = kase.get_arm ();
-	      rust_assert (kase_arm.get_patterns ().size () > 0);
-
-	      // generate implicit label
-	      Location arm_locus = kase_arm.get_locus ();
-	      tree case_label = ctx->get_backend ()->label (
-		fndecl, "" /* empty creates an artificial label */, arm_locus);
-
-	      // setup the bindings for the block
-	      for (auto &kase_pattern : kase_arm.get_patterns ())
-		{
-		  tree switch_kase_expr
-		    = CompilePatternCaseLabelExpr::Compile (kase_pattern.get (),
-							    case_label, ctx);
-		  ctx->add_statement (switch_kase_expr);
-
-		  CompilePatternBindings::Compile (kase_pattern.get (),
-						   match_scrutinee_expr, ctx);
-		}
-
-	      // compile the expr and setup the assignment if required when tmp
-	      // != NULL
-	      // NOTE: this compile step pushes the actual case expr into the ctx
-	      tree kase_expr_tree
-		= CompileExpr::Compile (kase.get_expr ().get (), ctx);
-
-	      // FIXME: is it right to do this here?
-	      if (tmp != NULL)
-		{
-		  tree result_reference
-		    = ctx->get_backend ()->var_expression (tmp, arm_locus);
-		  tree assignment = ctx->get_backend ()->assignment_statement (
-		    result_reference, kase_expr_tree, arm_locus);
-		  ctx->add_statement (assignment);
-		}
-
-	      // go to end label
-	      tree goto_end_label
-		= build1_loc (arm_locus.gcc_location (), GOTO_EXPR,
-			      void_type_node, end_label);
-	      ctx->add_statement (goto_end_label);
-	    }
-	}
-
-      else
-	{
-	  // Otherwise, each head corresponds to another sub-match we must make
-	  // in the recursive step here.
-	  for (size_t i = 0; i < map.heads.size (); i++)
-	    {
-	      // The head is NOT a tuple pattern
-	      //
-	      // generate implicit label
-	      // Location arm_locus = map.heads[i].get_locus ();
-	      Location arm_locus = expr.get_locus (); // FIXME
-	      tree case_label = ctx->get_backend ()->label (
-		fndecl, "" /* empty creates an artificial label */, arm_locus);
-
-	      tree switch_kase_expr
-		= CompilePatternCaseLabelExpr::Compile (map.heads[i].get (),
-							case_label, ctx);
-
-	      // COPIED - add the case label
-	      ctx->add_statement (switch_kase_expr);
-	      // TODO: is this match_scrutinee_expr correct?
-	      CompilePatternBindings::Compile (map.heads[i].get (),
-					       match_scrutinee_expr, ctx);
-	      //////
-
-	      // Wildcard propegation: e.g.
-	      // match (Foo::B, 3) {
-	      //  (Foo::B, 2) => { blk1}
-	      //  _ => { blk2}
-	      // }
-	      // When we make the match:
-	      //   match tmp.1 {
-	      //    Foo::B => { inner_match }
-	      // }
-	      // We must propegate a wildcard into the inner match, since the
-	      // Foo::B part will match. Otherwise the inner will have no
-	      // default so we won't correctly hit the wildcard blk2.
-	      map.cases[i].push_back (*(map.wildcard.get ()));
-
-	      // compile the expression that goes along with it - recursive
-	      // NOTE: the return value is only used for debugging
-	      tree case_expr_tree = foo (expr, map.cases[i],
-					 match_scrutinee_expr, index + 1, ctx, tmp);
-
-	      // COPIED - go to end label
-	      tree goto_end_label
-		= build1_loc (arm_locus.gcc_location (), GOTO_EXPR,
-			      void_type_node, end_label);
-	      ctx->add_statement (goto_end_label);
-	      //////
-	    }
-
-	  // Wildcard at the outer level.
-	  if (map.wildcard != nullptr)
-	    {
-	      Location arm_locus = expr.get_locus (); // FIXME
-	      tree case_label = ctx->get_backend ()->label (
-		fndecl, "" /* empty creates an artificial label */, arm_locus);
-
-	      tree switch_kase_expr = CompilePatternCaseLabelExpr::Compile (
-		map.wildcard->get_arm ().get_patterns ()[0].get (), case_label,
-		ctx);
-	      ctx->add_statement (switch_kase_expr);
-	      // TODO: is this match_scrutinee_expr correct?
-	      CompilePatternBindings::Compile (
-		map.wildcard->get_arm ().get_patterns ()[0].get (),
-		match_scrutinee_expr, ctx);
-
-	      CompileExpr::Compile (map.wildcard->get_expr ().get (), ctx);
-
-	      // COPIED - go to end label
-	      tree goto_end_label
-		= build1_loc (arm_locus.gcc_location (), GOTO_EXPR,
-			      void_type_node, end_label);
-	      ctx->add_statement (goto_end_label);
-	      //////
-	    }
-	}
-
-      // setup the switch expression
-      tree match_body = ctx->pop_block ();
-      tree match_expr_stmt
-	= build2_loc (expr.get_locus ().gcc_location (), SWITCH_EXPR,
-		      TREE_TYPE (match_scrutinee_expr_qualifier_expr),
-		      match_scrutinee_expr_qualifier_expr, match_body);
-
-      ctx->add_statement (match_expr_stmt);
-      ctx->add_statement (end_label_decl_statement);
-      return match_expr_stmt;
+      match_scrutinee_expr_qualifier_expr
+	= ctx->get_backend ()->struct_field_expression (
+	  scrutinee_first_record_expr, 0,
+	  expr.get_scrutinee_expr ()->get_locus ());
     }
 
-  return NULL_TREE;
+  if (map.heads.size () == 0)
+    {
+      // No heads means this is the end of recursion - just compile the cases
+      // HERE and return the resulting switch.
+      for (auto &kase : cases)
+	{
+	  // for now lets just get single pattern's working
+	  HIR::MatchArm &kase_arm = kase.get_arm ();
+	  rust_assert (kase_arm.get_patterns ().size () > 0);
+
+	  // generate implicit label
+	  Location arm_locus = kase_arm.get_locus ();
+	  tree case_label = ctx->get_backend ()->label (
+	    fndecl, "" /* empty creates an artificial label */, arm_locus);
+
+	  // setup the bindings for the block
+	  for (auto &kase_pattern : kase_arm.get_patterns ())
+	    {
+	      tree switch_kase_expr
+		= CompilePatternCaseLabelExpr::Compile (kase_pattern.get (),
+							case_label, ctx);
+	      ctx->add_statement (switch_kase_expr);
+
+	      CompilePatternBindings::Compile (kase_pattern.get (),
+					       match_scrutinee_expr, ctx);
+	    }
+
+	  // NOTE: this compile step pushes the actual case expr into the ctx
+	  tree kase_expr_tree
+	    = CompileExpr::Compile (kase.get_expr ().get (), ctx);
+
+	  // FIXME: is it right to do this here?
+	  if (tmp != NULL)
+	    {
+	      tree result_reference
+		= ctx->get_backend ()->var_expression (tmp, arm_locus);
+	      tree assignment
+		= ctx->get_backend ()->assignment_statement (result_reference,
+							     kase_expr_tree,
+							     arm_locus);
+	      ctx->add_statement (assignment);
+	    }
+
+	  // go to end label
+	  tree goto_end_label
+	    = build1_loc (arm_locus.gcc_location (), GOTO_EXPR, void_type_node,
+			  end_label);
+	  ctx->add_statement (goto_end_label);
+	}
+    }
+
+  else
+    {
+      // Otherwise, each head corresponds to another sub-match we must make
+      // in the recursive step here.
+      for (size_t i = 0; i < map.heads.size (); i++)
+	{
+	  // The head is NOT a tuple pattern
+	  //
+	  // generate implicit label
+	  // Location arm_locus = map.heads[i].get_locus ();
+	  Location arm_locus = expr.get_locus (); // FIXME
+	  tree case_label = ctx->get_backend ()->label (
+	    fndecl, "" /* empty creates an artificial label */, arm_locus);
+
+	  tree switch_kase_expr
+	    = CompilePatternCaseLabelExpr::Compile (map.heads[i].get (),
+						    case_label, ctx);
+
+	  // COPIED - add the case label
+	  ctx->add_statement (switch_kase_expr);
+	  // TODO: is this match_scrutinee_expr correct?
+	  CompilePatternBindings::Compile (map.heads[i].get (),
+					   match_scrutinee_expr, ctx);
+	  //////
+
+	  // Wildcard propegation: e.g.
+	  // match (Foo::B, 3) {
+	  //  (Foo::B, 2) => { blk1}
+	  //  _ => { blk2}
+	  // }
+	  // When we make the match:
+	  //   match tmp.1 {
+	  //    Foo::B => { inner_match }
+	  // }
+	  // We must propegate a wildcard into the inner match, since the
+	  // Foo::B part will match. Otherwise the inner will have no
+	  // default so we won't correctly hit the wildcard blk2.
+	  map.cases[i].push_back (*(map.wildcard.get ()));
+
+	  // compile the expression that goes along with it - recursive
+	  compile_tuple_match (expr, map.cases[i], match_scrutinee_expr, index + 1, ctx, tmp);
+
+	  // COPIED - go to end label
+	  tree goto_end_label
+	    = build1_loc (arm_locus.gcc_location (), GOTO_EXPR, void_type_node,
+			  end_label);
+	  ctx->add_statement (goto_end_label);
+	  //////
+	}
+
+      // Wildcard at the outer level.
+      if (map.wildcard != nullptr)
+	{
+	  Location arm_locus = expr.get_locus (); // FIXME
+	  tree case_label = ctx->get_backend ()->label (
+	    fndecl, "" /* empty creates an artificial label */, arm_locus);
+
+	  tree switch_kase_expr = CompilePatternCaseLabelExpr::Compile (
+	    map.wildcard->get_arm ().get_patterns ()[0].get (), case_label,
+	    ctx);
+	  ctx->add_statement (switch_kase_expr);
+	  // TODO: is this match_scrutinee_expr correct?
+	  CompilePatternBindings::Compile (
+	    map.wildcard->get_arm ().get_patterns ()[0].get (),
+	    match_scrutinee_expr, ctx);
+
+	  CompileExpr::Compile (map.wildcard->get_expr ().get (), ctx);
+
+	  // COPIED - go to end label
+	  tree goto_end_label
+	    = build1_loc (arm_locus.gcc_location (), GOTO_EXPR, void_type_node,
+			  end_label);
+	  ctx->add_statement (goto_end_label);
+	  //////
+	}
+    }
+
+  // setup the switch expression
+  tree match_body = ctx->pop_block ();
+  tree match_expr_stmt
+    = build2_loc (expr.get_locus ().gcc_location (), SWITCH_EXPR,
+		  TREE_TYPE (match_scrutinee_expr_qualifier_expr),
+		  match_scrutinee_expr_qualifier_expr, match_body);
+
+  ctx->add_statement (match_expr_stmt);
+  ctx->add_statement (end_label_decl_statement);
+
 }
 
 // Helper for CompileExpr::visit (HIR::MatchExpr).
@@ -829,8 +831,7 @@ CompileExpr::visit (HIR::MatchExpr &expr)
       switch (exprtype)
 	{
 	  case HIR::Expr::ExprType::Tuple: {
-	    tree result = foo (expr, expr.get_match_cases (),
-			       match_scrutinee_expr, 0, ctx, tmp);
+	    compile_tuple_match (expr, expr.get_match_cases (), match_scrutinee_expr, 0, ctx, tmp);
 
 	    return;
 
@@ -914,13 +915,8 @@ CompileExpr::visit (HIR::MatchExpr &expr)
 	      {
 		// currently this does all the rest of the compilation including
 		// pushing the statements into the ctx.
-		tree result = foo (expr, expr.get_match_cases (),
-				   match_scrutinee_expr, 0, ctx, tmp);
+		compile_tuple_match (expr, expr.get_match_cases (), match_scrutinee_expr, 0, ctx, tmp);
 
-		if (result == NULL_TREE)
-		  {
-		    printf ("foo"); // so we can break here;
-		  }
 		return;
 	      }
 	  }
