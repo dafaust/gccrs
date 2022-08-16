@@ -527,7 +527,21 @@ tree foo (HIR::MatchExpr &expr, std::vector<HIR::MatchCase> cases,
   //if (TREE_CODE (match_scrutinee_expr) == VAR_DECL
   //   && TREE_CODE (TREE_TYPE (match_scrutinee_expr)) == RECORD_TYPE)
     {
-      tree field = ctx->get_backend ()->struct_field_expression (match_scrutinee_expr, index, expr.get_locus ());
+      tree field = ctx->get_backend ()->struct_field_expression (match_scrutinee_expr,
+								 index,
+								 expr.get_scrutinee_expr ()->get_locus ());
+      tree match_scrutinee_expr_qualifier_expr = field;
+
+      if (TREE_CODE (TREE_TYPE (field)) == UNION_TYPE)
+	{
+	  tree scrutinee_first_record_expr
+	    = ctx->get_backend ()->struct_field_expression (
+	      field, 0, expr.get_scrutinee_expr ()->get_locus ());
+
+	  match_scrutinee_expr_qualifier_expr
+	    = ctx->get_backend ()->struct_field_expression(
+	      scrutinee_first_record_expr, 0, expr.get_scrutinee_expr()->get_locus ());
+	}
 
       if (map.heads.size () == 0)
 	{
@@ -604,12 +618,15 @@ tree foo (HIR::MatchExpr &expr, std::vector<HIR::MatchCase> cases,
 	  //////
 	}
 
+      // TODO: Wildcard case
+      // if (map.wildcard != nullptr) { ... }
+
       // setup the switch expression
       tree match_body = ctx->pop_block ();
       tree match_expr_stmt
 	= build2_loc (expr.get_locus ().gcc_location (), SWITCH_EXPR,
-		      TREE_TYPE (field),
-		      field, match_body);
+		      TREE_TYPE (match_scrutinee_expr_qualifier_expr),
+		      match_scrutinee_expr_qualifier_expr, match_body);
 
       ctx->add_statement (match_expr_stmt);
       ctx->add_statement (end_label_decl_statement);
