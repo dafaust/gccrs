@@ -573,6 +573,7 @@ tree foo (HIR::MatchExpr &expr, std::vector<HIR::MatchCase> cases,
 	      // compile the expr and setup the assignment if required when tmp
 	      // != NULL
 	      // FIXME: How do we deal with needing temporaries here?
+	      // NOTE: this compile step pushes the actual case expr into the ctx
 	      tree kase_expr_tree
 		= CompileExpr::Compile (kase.get_expr ().get (), ctx);
 
@@ -619,7 +620,29 @@ tree foo (HIR::MatchExpr &expr, std::vector<HIR::MatchCase> cases,
 	}
 
       // TODO: Wildcard case
-      // if (map.wildcard != nullptr) { ... }
+      if (map.wildcard != nullptr)
+	{
+	  Location arm_locus = expr.get_locus (); // FIXME
+	  tree case_label = ctx->get_backend ()->label (
+	    fndecl, "" /* empty creates an artificial label */, arm_locus);
+
+	  tree switch_kase_expr
+	    = CompilePatternCaseLabelExpr::Compile (map.wildcard->get_arm().get_patterns ()[0].get (),
+						    case_label, ctx);
+	  ctx->add_statement (switch_kase_expr);
+	  // TODO: is this match_scrutinee_expr correct?
+	  CompilePatternBindings::Compile (map.wildcard->get_arm().get_patterns ()[0].get (),
+					   match_scrutinee_expr, ctx);
+
+	  CompileExpr::Compile (map.wildcard->get_expr().get (), ctx);
+
+	  // COPIED - go to end label
+	  tree goto_end_label
+	    = build1_loc (arm_locus.gcc_location (), GOTO_EXPR, void_type_node,
+			  end_label);
+	  ctx->add_statement (goto_end_label);
+	  //////
+	}
 
       // setup the switch expression
       tree match_body = ctx->pop_block ();
