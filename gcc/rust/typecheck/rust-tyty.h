@@ -1259,14 +1259,14 @@ public:
   struct ReprOptions
   {
     // bool is_c;
-    // bool is_transparent;
+    bool is_transparent;
     //...
 
     // For align and pack: 0 = unspecified. Nonzero = byte alignment.
     // It is an error for both to be nonzero, this should be caught when
     // parsing the #[repr] attribute.
-    unsigned char align = 0;
-    unsigned char pack = 0;
+    unsigned int align = 0;
+    unsigned int pack = 0;
   };
 
   ADTType (HirId ref, std::string identifier, RustIdent ident, ADTKind adt_kind,

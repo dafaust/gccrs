@@ -198,12 +198,13 @@ void
 TyTyResolveCompile::visit (const TyTy::ADTType &type)
 {
   tree type_record = error_mark_node;
+  std::vector<Backend::typed_identifier> fields;
+
   if (!type.is_enum ())
     {
       rust_assert (type.number_of_variants () == 1);
 
       TyTy::VariantDef &variant = *type.get_variants ().at (0);
-      std::vector<Backend::typed_identifier> fields;
       for (size_t i = 0; i < variant.num_fields (); i++)
 	{
 	  const TyTy::StructFieldType *field = variant.get_field_at_index (i);
@@ -251,7 +252,6 @@ TyTyResolveCompile::visit (const TyTy::ADTType &type)
       for (auto &variant : type.get_variants ())
 	{
 	  std::vector<Backend::typed_identifier> fields;
-
 	  // add in the qualifier field for the variant
 	  tree enumeral_type
 	    = TyTyResolveCompile::get_implicit_enumeral_node_type (ctx);
@@ -329,6 +329,46 @@ TyTyResolveCompile::visit (const TyTy::ADTType &type)
     {
       SET_TYPE_ALIGN (type_record, repr.align * 8);
       TYPE_USER_ALIGN (type_record) = 1;
+    }
+  else if (repr.is_transparent)
+    {
+      if (type.is_enum ())
+	{
+	  if (type.number_of_variants () != 1)
+	    {
+	      rust_error_at (Location (),
+			     "%<#[repr(transparent)]%> cannot be applied to"
+			     " enums with more than one variant");
+	      translated = error_mark_node;
+	      return;
+	    }
+	  /* TODO: Make the enum repr identical to the one variant.  */
+	  TyTy::VariantDef &variant = *type.get_variants ().at (0);
+	}
+      else
+	{
+	  unsigned int n_nonzst = 0;
+	  Backend::typed_identifier target_field;
+	  for (auto &f : fields)
+	    {
+	      /* TYPE_SIZE returns a NULL_TREE for zero-sized-types.  */
+	      if (TYPE_SIZE (f.type) != NULL_TREE)
+		{
+		  n_nonzst += 1;
+		  target_field = f;
+		}
+	    }
+	  if (n_nonzst != 1)
+	    {
+	      rust_error_at (Location (),
+			     "%<#[repr(transparent)]%> can only be applied to"
+			     "struct or union types with exactly one"
+			     "non-zero-size field");
+	      translated = error_mark_node;
+	      return;
+	    }
+	  /* TODO: Make the struct/union repr identical to the one field.  */
+	}
     }
 
   std::string named_struct_str

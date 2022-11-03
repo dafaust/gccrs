@@ -288,6 +288,7 @@ TypeCheckBase::parse_repr_options (const AST::AttrVec &attrs, Location locus)
   TyTy::ADTType::ReprOptions repr;
   repr.pack = 0;
   repr.align = 0;
+  repr.is_transparent = false;
 
   for (const auto &attr : attrs)
     {
@@ -309,22 +310,23 @@ TypeCheckBase::parse_repr_options (const AST::AttrVec &attrs, Location locus)
 	  // of constructs with nesting like #[repr(packed(2))] rather than
 	  // manually parsing the string "packed(2)" here.
 
+	  std::string rep = inline_option;
 	  size_t oparen = inline_option.find ('(', 0);
-	  bool is_pack = false, is_align = false;
-	  unsigned char value = 1;
 
 	  if (oparen == std::string::npos)
 	    {
-	      is_pack = inline_option.compare ("packed") == 0;
-	      is_align = inline_option.compare ("align") == 0;
+	      if (inline_option.compare ("packed") == 0)
+		repr.pack = 1;
+	      else if (inline_option.compare ("align") == 0)
+		repr.align = 1;
+	      else if (inline_option.compare ("transparent") == 0)
+		repr.is_transparent = true;
+	      else
+		rust_error_at (locus, "unknown repr");
 	    }
 
 	  else
 	    {
-	      std::string rep = inline_option.substr (0, oparen);
-	      is_pack = rep.compare ("packed") == 0;
-	      is_align = rep.compare ("align") == 0;
-
 	      size_t cparen = inline_option.find (')', oparen);
 	      if (cparen == std::string::npos)
 		{
@@ -332,13 +334,25 @@ TypeCheckBase::parse_repr_options (const AST::AttrVec &attrs, Location locus)
 		}
 
 	      std::string value_str = inline_option.substr (oparen, cparen);
-	      value = strtoul (value_str.c_str () + 1, NULL, 10);
-	    }
+	      unsigned long value = strtoul (value_str.c_str () + 1, NULL, 10);
 
-	  if (is_pack)
-	    repr.pack = value;
-	  else if (is_align)
-	    repr.align = value;
+	      /* Align/Pack must be a power of two and at most 2^29.  */
+	      if (__builtin_popcountl (value) == 1)
+		{
+		  if (value > (1 << 29))
+		    rust_error_at (locus, "larger than 2^29");
+		}
+	      else
+		rust_error_at (locus, "not a power of two");
+
+	      std::string rep_str = inline_option.substr (0, oparen);
+	      if (rep_str.compare ("packed") == 0)
+		repr.pack = value;
+	      else if (rep_str.compare ("align") == 0)
+		repr.align = value;
+	      else
+		rust_error_at (locus, "attribute does not take an argument");
+	    }
 
 	  // Multiple repr options must be specified with e.g. #[repr(C,
 	  // packed(2))].
